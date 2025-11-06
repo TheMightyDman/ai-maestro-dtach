@@ -37,6 +37,7 @@ import { PtySession } from './PtySession'
 import { metrics } from '../metrics'
 import { validateToken } from '../auth'
 import { normalizeSessionName, runTmuxCommand } from '../tmux'
+import { getSessionEngineClient } from '../../../lib/session-engine-client'
 
 interface SessionManagerOptions {
   readonly ringBytes: number
@@ -124,8 +125,13 @@ function parseEnvInt(key: string, fallback: number): number {
 }
 
 async function sessionExists(sessionName: string): Promise<boolean> {
-  const result = await runTmuxCommand(['has-session', '-t', sessionName], { allowCodes: [1], timeoutMs: 1500 })
-  return result.code !== 1
+  try {
+    const client = getSessionEngineClient()
+    await client.getMetadata(sessionName)
+    return true
+  } catch {
+    return false
+  }
 }
 
 async function capturePane(sessionName: string): Promise<Buffer> {
@@ -358,7 +364,7 @@ export class SessionManager {
       return
     }
 
-    const session = this.getOrCreateSession(normalized)
+    const session = await this.getOrCreateSession(normalized)
     if (session.clients.size >= this.options.maxClientsPerSession) {
       this.sendErrorAndClose(ctx, 'Session is full', 'Too many viewers are attached right now')
       return
@@ -531,7 +537,7 @@ export class SessionManager {
     ctx.ws.close(1008, message)
   }
 
-  private getOrCreateSession(sessionName: string): SessionState {
+  private async getOrCreateSession(sessionName: string): Promise<SessionState> {
     let session = this.sessions.get(sessionName)
     if (session) {
       return session
@@ -556,7 +562,7 @@ export class SessionManager {
       scrollLimit: 0
     }
 
-    const pty = new PtySession({
+    const pty = await PtySession.create({
       sessionName,
       onData: (chunk) => {
         this.onPtyData(sessionState, chunk)
