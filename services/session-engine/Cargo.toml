@@ -1,0 +1,22 @@
+[package]
+name = "aimaestro-engine"
+version = "1.0.0"
+edition = "2021"
+authors = ["AI Maestro Contributors"]
+description = "dtach-backed session engine for AI Maestro"
+
+[dependencies]
+tokio = { version = "1.35", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+nix = { version = "0.27", features = ["process", "signal", "socket"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+opt-level = "z"

@@ -1,0 +1,199 @@
+name: Build Session Engine
+
+on:
+  push:
+    branches: [main, develop, 'claude/**']
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+jobs:
+  build-dtach:
+    name: Build dtach
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: darwin-arm64
+          - os: macos-13
+            target: darwin-x86_64
+          - os: ubuntu-latest
+            target: linux-x86_64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build dtach
+        run: |
+          cd services/session-engine/vendor/dtach
+          ./configure
+          make
+          strip dtach || true
+
+      - name: Create artifact directory
+        run: |
+          mkdir -p artifacts
+          cp services/session-engine/vendor/dtach/dtach artifacts/dtach-${{ matrix.target }}
+
+      - name: Upload dtach artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dtach-${{ matrix.target }}
+          path: artifacts/dtach-${{ matrix.target }}
+          retention-days: 30
+
+  build-engine:
+    name: Build session engine
+    needs: build-dtach
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: darwin-arm64
+          - os: macos-13
+            target: x86_64-apple-darwin
+            artifact: darwin-x86_64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: linux-x86_64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            services/session-engine/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build session engine
+        run: |
+          cd services/session-engine
+          cargo build --release --target ${{ matrix.target }}
+          strip target/${{ matrix.target }}/release/aimaestro-engine || true
+
+      - name: Run tests
+        run: |
+          cd services/session-engine
+          cargo test --target ${{ matrix.target }}
+
+      - name: Create artifact directory
+        run: |
+          mkdir -p artifacts
+          cp services/session-engine/target/${{ matrix.target }}/release/aimaestro-engine \
+             artifacts/aimaestro-engine-${{ matrix.artifact }}
+
+      - name: Upload engine artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aimaestro-engine-${{ matrix.artifact }}
+          path: artifacts/aimaestro-engine-${{ matrix.artifact }}
+          retention-days: 30
+
+  create-release-bundle:
+    name: Create release bundle
+    needs: [build-dtach, build-engine]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Organize binaries
+        run: |
+          mkdir -p public/bin
+
+          # Copy dtach binaries
+          cp artifacts/dtach-darwin-arm64/dtach-darwin-arm64 public/bin/
+          cp artifacts/dtach-darwin-x86_64/dtach-darwin-x86_64 public/bin/
+          cp artifacts/dtach-linux-x86_64/dtach-linux-x86_64 public/bin/
+
+          # Copy engine binaries
+          cp artifacts/aimaestro-engine-darwin-arm64/aimaestro-engine-darwin-arm64 public/bin/
+          cp artifacts/aimaestro-engine-darwin-x86_64/aimaestro-engine-darwin-x86_64 public/bin/
+          cp artifacts/aimaestro-engine-linux-x86_64/aimaestro-engine-linux-x86_64 public/bin/
+
+          # Make executable
+          chmod +x public/bin/*
+
+          # List binaries
+          ls -lh public/bin/
+
+      - name: Create checksums
+        run: |
+          cd public/bin
+          sha256sum * > checksums.txt
+          cat checksums.txt
+
+      - name: Upload bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: session-engine-bundle
+          path: public/bin/
+          retention-days: 90
+
+  test-integration:
+    name: Integration tests
+    needs: [build-dtach, build-engine]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download dtach
+        uses: actions/download-artifact@v4
+        with:
+          name: dtach-linux-x86_64
+          path: services/session-engine/dist/bin
+
+      - name: Download engine
+        uses: actions/download-artifact@v4
+        with:
+          name: aimaestro-engine-linux-x86_64
+          path: services/session-engine/dist/bin
+
+      - name: Make binaries executable
+        run: |
+          chmod +x services/session-engine/dist/bin/*
+          mv services/session-engine/dist/bin/dtach-linux-x86_64 \
+             services/session-engine/dist/bin/dtach
+          mv services/session-engine/dist/bin/aimaestro-engine-linux-x86_64 \
+             services/session-engine/dist/bin/aimaestro-engine
+
+      - name: Test dtach
+        run: |
+          services/session-engine/dist/bin/dtach --version
+
+      - name: Test engine (basic)
+        run: |
+          export AIMAESTRO_DTACH_PATH=$PWD/services/session-engine/dist/bin/dtach
+          timeout 5s services/session-engine/dist/bin/aimaestro-engine || \
+            if [ $? -eq 124 ]; then echo "Engine started successfully"; else exit 1; fi
+
+      - name: Run integration tests
+        run: |
+          # TODO: Add integration test suite in Phase 1
+          echo "Integration tests will be added in Phase 1"

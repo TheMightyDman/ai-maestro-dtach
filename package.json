@@ -27,11 +27,16 @@
   "scripts": {
     "dev": "node server.mjs",
     "build": "next build",
+    "build:all": "npm run build:dtach && npm run build:engine && npm run gateway:build && npm run build",
+    "build:dtach": "cd services/session-engine/vendor/dtach && ./configure && make && mkdir -p ../../dist/bin && cp dtach ../../dist/bin/",
+    "build:engine": "cd services/session-engine && cargo build --release && mkdir -p dist/bin && cp target/release/aimaestro-engine dist/bin/",
     "start": "NODE_ENV=production node server.mjs",
     "lint": "next lint",
     "gateway:build": "tsc -p services/terminal-gateway/tsconfig.json",
     "gateway:dev": "tsc -w -p services/terminal-gateway/tsconfig.json",
-    "gateway:start": "node services/terminal-gateway/dist/index.js"
+    "gateway:start": "node services/terminal-gateway/dist/index.js",
+    "engine:dev": "cd services/session-engine && RUST_LOG=info cargo run",
+    "engine:test": "cd services/session-engine && cargo test"
   },
   "dependencies": {
     "@xterm/addon-clipboard": "^0.1.0",
