@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Claude Code Dashboard** - A browser-based terminal dashboard for managing multiple Claude Code sessions running in tmux on macOS. The application auto-discovers tmux sessions and provides a unified web interface with real-time terminal streaming.
+**AI Maestro** - A browser-based terminal dashboard for managing multiple AI coding agent sessions with dtach-backed session persistence. The application provides a unified web interface with real-time terminal streaming, session management, and inter-agent messaging.
 
-**Current Phase:** Phase 1 - Local-only, auto-discovery, no authentication
-**Tech Stack:** Next.js 14 (App Router), React 18, xterm.js, WebSocket, node-pty, Tailwind CSS, lucide-react
-**Platform:** macOS 12.0+, Node.js 18.17+/20.x, tmux 3.0+
+**Current Phase:** Production-ready with dtach session engine
+**Tech Stack:** Next.js 14 (App Router), React 18, xterm.js, WebSocket, node-pty, Rust session engine, dtach, Tailwind CSS, lucide-react
+**Platform:** macOS 12.0+, Linux, Windows (WSL2), Node.js 18.17+/20.x
 **Branding:** Space Grotesk font, titled "AI Maestro"
 
 ## Development Commands
@@ -22,10 +22,10 @@ yarn dev                 # Start dev server with hot reload (http://localhost:30
 yarn build               # Build optimized production bundle
 yarn start               # Start production server
 
-# Testing tmux sessions (for development)
-tmux new-session -s test-session     # Create test session
-tmux list-sessions                   # List all sessions (what the app discovers)
-tmux kill-session -t test-session    # Clean up test session
+# Session engine (for development)
+cargo build --release --manifest-path services/session-engine/Cargo.toml  # Build session engine
+./services/session-engine/target/release/aimaestro-engine  # Run session engine
+# Sessions are created via UI or API (http://localhost:23000/api/sessions/create)
 ```
 
 **Port Configuration:** Use `PORT=3001 yarn dev` if port 3000 is occupied.
