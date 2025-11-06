@@ -2,6 +2,7 @@
 // Wrapper for spawning and managing dtach sessions
 
 use anyhow::{Context, Result};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use tracing::{debug, info};
@@ -23,6 +24,7 @@ impl DtachProcess {
     /// * `socket` - Path where socket should be created
     /// * `shell` - Shell command to execute
     /// * `cwd` - Working directory
+    /// * `env` - Environment variables to set
     ///
     /// # Returns
     /// * `Ok(DtachProcess)` on success
@@ -32,6 +34,7 @@ impl DtachProcess {
         socket: PathBuf,
         shell: PathBuf,
         cwd: PathBuf,
+        env: HashMap<String, String>,
     ) -> Result<Self> {
         info!("Spawning dtach session: socket={:?}, shell={:?}", socket, shell);
 
@@ -42,14 +45,22 @@ impl DtachProcess {
         }
 
         // Execute: dtach -n <socket> <shell>
-        let output = Command::new(dtach_binary)
+        let mut command = Command::new(dtach_binary);
+        command
             .arg("-n")
             .arg(&socket)
             .arg(&shell)
             .current_dir(&cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        // Set environment variables
+        for (key, value) in env.iter() {
+            command.env(key, value);
+        }
+
+        let output = command
             .spawn()
             .context("Failed to spawn dtach process")?;
 

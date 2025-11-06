@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { loadPersistedSessions, unpersistSession } from '@/lib/session-persistence'
-import { normalizeSessionName, runTmuxCommand } from '@/lib/tmux'
+import { normalizeSessionName } from '@/lib/session-utils'
+import { getSessionEngineClient } from '@/lib/session-engine-client'
 
 /**
  * GET /api/sessions/restore
@@ -10,16 +11,10 @@ export async function GET() {
   try {
     const persistedSessions = loadPersistedSessions()
 
-    // Get currently active tmux sessions
-    const listResult = await runTmuxCommand(['list-sessions', '-F', '#{session_name}'], { allowCodes: [1] })
-    const activeSessionsRaw = listResult.stdout?.trim() ?? ''
-    const activeSessions = activeSessionsRaw
-      ? activeSessionsRaw
-        .split('\n')
-        .map((name) => normalizeSessionName(name))
-        .filter((name): name is string => Boolean(name))
-      : []
-    const activeSessionSet = new Set(activeSessions)
+    // Get currently active sessions from engine
+    const client = getSessionEngineClient()
+    const engineSessions = await client.listSessions()
+    const activeSessionSet = new Set(engineSessions.map(s => s.id))
 
     // Filter to only sessions that don't currently exist
     const restorableSessions = persistedSessions.filter((session) => {
@@ -58,6 +53,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'No sessions to restore' }, { status: 404 })
     }
 
+    const client = getSessionEngineClient()
     const results = []
 
     for (const session of sessionsToRestore) {
@@ -70,18 +66,23 @@ export async function POST(request: Request) {
           continue
         }
 
-        const existingCheck = await runTmuxCommand(['has-session', '-t', sessionId], { allowCodes: [1] })
+        // Check if session exists via engine
+        let sessionExists = false
+        try {
+          await client.getMetadata(sessionId)
+          sessionExists = true
+        } catch {
+          // Session doesn't exist, which is expected for restore
+          sessionExists = false
+        }
 
-        if (existingCheck.code === 1) {
-          // Create the session
-          await runTmuxCommand([
-            'new-session',
-            '-d',
-            '-s',
-            sessionId,
-            '-c',
-            session.workingDirectory
-          ])
+        if (!sessionExists) {
+          // Create the session via engine
+          await client.createSession({
+            name: sessionId,
+            cwd: session.workingDirectory,
+            env: {}
+          })
           results.push({ sessionId: sessionId, status: 'restored' })
         } else {
           results.push({ sessionId: sessionId, status: 'already_exists' })

@@ -42,10 +42,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Get current session
-SESSION=$(tmux display-message -p '#S' 2>/dev/null)
+# Get current session from environment variable set by session engine
+SESSION="${AIMAESTRO_SESSION}"
 if [ -z "$SESSION" ]; then
-  echo "Error: Not in a tmux session"
+  echo "Error: Not in an AI Maestro session (AIMAESTRO_SESSION not set)"
   exit 1
 fi
 

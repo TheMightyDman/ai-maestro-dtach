@@ -36,7 +36,7 @@ import { RingBuffer } from './RingBuffer'
 import { PtySession } from './PtySession'
 import { metrics } from '../metrics'
 import { validateToken } from '../auth'
-import { normalizeSessionName, runTmuxCommand } from '../tmux'
+import { normalizeSessionName } from '../session-utils'
 import { getSessionEngineClient } from '../../../lib/session-engine-client'
 
 interface SessionManagerOptions {

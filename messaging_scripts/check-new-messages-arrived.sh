@@ -1,7 +1,7 @@
 #!/bin/bash
 # AI Maestro - Quick check for new messages (runs after each Claude response)
 
-SESSION=$(tmux display-message -p '#S' 2>/dev/null)
+SESSION="${AIMAESTRO_SESSION}"
 if [ -z "$SESSION" ]; then
   exit 0
 fi

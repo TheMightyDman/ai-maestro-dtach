@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { unpersistSession } from '@/lib/session-persistence'
-import { normalizeSessionName } from '@/lib/tmux'
+import { normalizeSessionName } from '@/lib/session-utils'
 import { getSessionEngineClient } from '@/lib/session-engine-client'
 
 export const dynamic = 'force-dynamic'

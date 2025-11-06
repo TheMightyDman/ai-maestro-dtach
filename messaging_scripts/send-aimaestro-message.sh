@@ -24,10 +24,10 @@ MESSAGE="$3"
 PRIORITY="${4:-normal}"
 TYPE="${5:-request}"
 
-# Get current session
-FROM_SESSION=$(tmux display-message -p '#S' 2>/dev/null)
+# Get current session from environment variable set by session engine
+FROM_SESSION="${AIMAESTRO_SESSION}"
 if [ -z "$FROM_SESSION" ]; then
-  echo "Error: Not in a tmux session"
+  echo "Error: Not in an AI Maestro session (AIMAESTRO_SESSION not set)"
   exit 1
 fi
 

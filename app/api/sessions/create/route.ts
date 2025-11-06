@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { persistSession } from '@/lib/session-persistence'
-import { normalizeSessionName } from '@/lib/tmux'
+import { normalizeSessionName } from '@/lib/session-utils'
 import { getSessionEngineClient } from '@/lib/session-engine-client'
 
 export async function POST(request: Request) {

@@ -1,8 +1,8 @@
 #!/bin/bash
 # AI Maestro - Check and display UNREAD messages at session start
-# This is the auto-run version that shows in tmux on session attach
+# This is the auto-run version that shows on session attach
 
-SESSION=$(tmux display-message -p '#S' 2>/dev/null)
+SESSION="${AIMAESTRO_SESSION}"
 if [ -z "$SESSION" ]; then
   exit 0
 fi

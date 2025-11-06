@@ -16,7 +16,7 @@
 set -e
 
 MESSAGE_DIR="$HOME/.aimaestro/messages"
-CURRENT_SESSION=$(tmux display-message -p '#S' 2>/dev/null || echo "unknown")
+CURRENT_SESSION="${AIMAESTRO_SESSION:-unknown}"
 
 # Color codes for output
 RED='\033[0;31m'

@@ -93,12 +93,18 @@ impl SessionEngine {
         // Build socket path
         let socket_path = self.socket_dir.join(format!("{}.sock", request.name));
 
+        // Prepare environment variables
+        let mut env = request.env.clone();
+        // Always set AIMAESTRO_SESSION so scripts can detect current session
+        env.insert("AIMAESTRO_SESSION".to_string(), request.name.clone());
+
         // Spawn dtach session
         let dtach = DtachProcess::spawn_new(
             &self.dtach_path,
             socket_path.clone(),
             shell,
             request.cwd.clone(),
+            env.clone(),
         )?;
 
         // Create session entry
@@ -108,7 +114,7 @@ impl SessionEngine {
             cwd: request.cwd,
             created_at: Utc::now(),
             last_activity: Utc::now(),
-            env: request.env,
+            env,  // Use the modified env with AIMAESTRO_SESSION
             agent_id: None,
             status: SessionStatus::Active,
             pid: dtach.pid,
