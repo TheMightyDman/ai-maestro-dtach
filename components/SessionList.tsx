@@ -896,7 +896,7 @@ function CreateSessionModal({
                   }`}>
                     Local
                   </span>
-                  <span className="text-xs text-gray-400 mt-1">tmux session</span>
+                  <span className="text-xs text-gray-400 mt-1">dtach session</span>
                   {deploymentType === 'local' && (
                     <div className="absolute top-2 right-2 w-2 h-2 bg-blue-500 rounded-full"></div>
                   )}

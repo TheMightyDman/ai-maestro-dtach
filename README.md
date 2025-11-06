@@ -19,7 +19,7 @@
 
 ## The Problem
 
-You're using Claude Code for backend, Aider for frontend, and Cursor for docs. Each in its own terminal window. Each in a different tmux pane. You're constantly switching contexts, losing track of which agent is where, and your terminal tabs look like chaos.
+You're using Claude Code for backend, Aider for frontend, and Cursor for docs. Each in its own terminal window. You're constantly switching contexts, losing track of which agent is where, and your terminal tabs look like chaos.
 
 ## The Solution
 
@@ -52,7 +52,7 @@ Works with **any** terminal-based AI:
 - **Rename** with a click
 - **Delete** when done
 - **Notes** for each session (auto-saved to localStorage)
-- **Auto-discovery**: Detects all your tmux sessions automatically
+- **Auto-discovery**: Detects all your sessions automatically
 
 ### Agent Communication System
 - **File-Based Messaging**: Persistent, structured messages between agents
@@ -62,16 +62,12 @@ Works with **any** terminal-based AI:
   - **Unread-only filtering**: Agents see only new messages
   - **Auto-mark-as-read**: Messages marked read after retrieval
   - **Inbox & Outbox**: Full send/receive tracking per agent
-- **Instant tmux Notifications**: Real-time alerts for urgent matters
-  - Popup notifications (non-intrusive)
-  - Terminal injections (visible in history)
-  - Formatted output (for critical alerts)
 - **CLI Tools**: Shell scripts for command-line messaging ([📁 View Scripts](./messaging_scripts))
   - [`send-aimaestro-message.sh`](./messaging_scripts/send-aimaestro-message.sh) - Send structured messages
   - [`forward-aimaestro-message.sh`](./messaging_scripts/forward-aimaestro-message.sh) - Forward messages between sessions
-  - [`check-and-show-messages.sh`](./messaging_scripts/check-and-show-messages.sh) - Display inbox
-  - [`check-new-messages-arrived.sh`](./messaging_scripts/check-new-messages-arrived.sh) - Quick unread count
-  - [`send-tmux-message.sh`](./messaging_scripts/send-tmux-message.sh) - Instant notifications
+  - [`check-aimaestro-messages.sh`](./messaging_scripts/check-aimaestro-messages.sh) - Check unread messages
+  - [`read-aimaestro-message.sh`](./messaging_scripts/read-aimaestro-message.sh) - Read and mark messages
+  - [`check-and-show-messages.sh`](./messaging_scripts/check-and-show-messages.sh) - Auto-display on session start
   - [📖 Installation Guide](./messaging_scripts/README.md)
 - **Web UI**: Rich inbox/compose interface in Messages tab
 - See [📬 Communication Docs](./docs/AGENT-COMMUNICATION-QUICKSTART.md) for 5-minute setup
@@ -119,7 +115,7 @@ wsl --install
 
 This installs:
 - ✅ Homebrew (if needed)
-- ✅ Node.js, Yarn, tmux (if needed)
+- ✅ Node.js, Yarn (dtach is bundled)
 - ✅ AI Maestro
 - ✅ Agent messaging system (optional)
 - ✅ All configuration
@@ -136,43 +132,11 @@ cd ai-maestro
 yarn install
 ```
 
-**Configure tmux for optimal scrolling** (highly recommended):
-```bash
-./scripts/setup-tmux.sh
-```
-
-This enables:
-- ✅ Mouse wheel scrolling (works with Claude Code's alternate screen)
-- ✅ 50,000 line scrollback buffer (up from 2,000)
-- ✅ Better terminal colors
-
-**Configure SSH for tmux sessions** (CRITICAL for git operations):
-```bash
-# Add to ~/.tmux.conf
-echo '
-# SSH Agent Configuration - AI Maestro
-set-option -g update-environment "DISPLAY SSH_ASKPASS SSH_AGENT_PID SSH_CONNECTION WINDOWID XAUTHORITY"
-set-environment -g '"'"'SSH_AUTH_SOCK'"'"' ~/.ssh/ssh_auth_sock
-' >> ~/.tmux.conf
-
-# Add to ~/.zshrc (or ~/.bashrc)
-echo '
-# SSH Agent for tmux - AI Maestro
-if [ -S "$SSH_AUTH_SOCK" ] && [ ! -h "$SSH_AUTH_SOCK" ]; then
-    mkdir -p ~/.ssh
-    ln -sf "$SSH_AUTH_SOCK" ~/.ssh/ssh_auth_sock
-fi
-' >> ~/.zshrc
-
-# Create initial symlink and reload tmux config
-mkdir -p ~/.ssh && ln -sf "$SSH_AUTH_SOCK" ~/.ssh/ssh_auth_sock
-tmux source-file ~/.tmux.conf 2>/dev/null || true
-```
-
-This ensures:
-- ✅ SSH keys work in all tmux sessions
-- ✅ Git operations work without permission errors
-- ✅ SSH persists across system restarts
+**No additional configuration needed** - dtach sessions automatically:
+- ✅ Support mouse wheel scrolling
+- ✅ Maintain 50,000 line scrollback buffer
+- ✅ Preserve your environment variables (including SSH_AUTH_SOCK)
+- ✅ Work with Claude Code's alternate screen buffer
 
 **Start the dashboard**:
 ```bash
@@ -183,7 +147,7 @@ Dashboard opens at `http://localhost:23000`
 
 **Network Access:** By default, AI Maestro is accessible on your local network at port 23000. See [Security](#security) below for important information.
 
-**⚠️ After System Restart:** tmux and the dashboard won't auto-start by default. To avoid socket errors after restart, see [Auto-start Setup Guide](./docs/OPERATIONS-GUIDE.md#services-not-running-after-restart-most-common) for one-time configuration using macOS LaunchAgents and pm2.
+**⚠️ After System Restart:** The session engine and dashboard won't auto-start by default. See [Auto-start Setup Guide](./docs/OPERATIONS-GUIDE.md#services-not-running-after-restart-most-common) for one-time configuration using macOS LaunchAgents and pm2.
 
 **Optional: Configure settings**
 ```bash
@@ -208,17 +172,15 @@ cp .env.example .env.local
 4. Click "Create Agent"
 5. Start your AI agent in the terminal that appears
 
-**Option B: From Terminal** (For tmux users)
+**Option B: Via API** (For automation)
 
 ```bash
-# In another terminal
-cd ~/my-project
-tmux new-session -s myproject-backend-api
+# Create session via API
+curl -X POST http://localhost:23000/api/sessions/create \
+  -H "Content-Type: application/json" \
+  -d '{"name": "myproject-backend-api", "workingDirectory": "~/my-project"}'
 
-# Start your AI agent (claude, aider, cursor, copilot, etc.)
-claude
-
-# Detach: Ctrl+B then D
+# Session will appear in dashboard automatically
 ```
 
 > **💡 Hierarchy Tip**: Session names with hyphens create automatic organization:
@@ -343,20 +305,6 @@ forward-aimaestro-message.sh latest frontend-dev qa-tester \
 - **Persistent**: Messages saved to `~/.aimaestro/messages/inbox/`
 - **Searchable**: Filter by priority, type, sender, or content
 
-#### 2. Instant tmux Notifications (Real-Time Alerts)
-
-For when agents need immediate attention:
-
-```bash
-# Urgent alert - pops up in the target agent's terminal
-send-tmux-message.sh backend-architect "🚨 Production database down - check inbox!"
-```
-
-**Three delivery methods:**
-- **`display`** - Non-intrusive popup (auto-dismisses)
-- **`inject`** - Visible in terminal history
-- **`echo`** - Formatted output for critical alerts
-
 ### Real-World Use Case
 
 ```bash
@@ -371,12 +319,14 @@ send-aimaestro-message.sh frontend-dev \
   high \
   notification
 
-# Backend also sends instant alert so frontend sees it immediately
-send-tmux-message.sh frontend-dev "✅ User stats API is ready - check inbox for details"
+# Frontend agent checks inbox (messages auto-display on session start)
+check-aimaestro-messages.sh
+# Shows: "📬 You have 1 unread message(s)"
+# With full context and details
 
-# Frontend agent checks inbox
-check-and-show-messages.sh
-# Sees the full message with context
+# Frontend reads the message
+read-aimaestro-message.sh <message-id>
+# Displays full message and marks as read
 
 # Frontend responds after integration
 send-aimaestro-message.sh backend-architect \
@@ -521,15 +471,21 @@ Take notes for each session. They're saved automatically to your browser:
 **Problem**: Managing multiple AI agents is chaotic.
 **Solution**: One dashboard to rule them all.
 
-**Why not just use tmux directly?**
-You can! AI Maestro is built on tmux. But instead of memorizing keybindings and switching between panes, you get:
-- Visual organization
-- Point-and-click switching
-- Persistent notes
-- Beautiful UI
+**Why not just use terminal multiplexers directly?**
+You can! But AI Maestro gives you:
+- Visual organization with 3-level hierarchy
+- Point-and-click switching instead of memorizing keybindings
+- Persistent notes per session
+- Beautiful web UI accessible from any browser
+- Built-in agent messaging system
+- No complex configuration needed
 
-**Is it just a tmux GUI?**
-Think of it as tmux + organization + notes + visual hierarchy. You still have full access to your tmux sessions from the terminal.
+**What about tmux/screen users?**
+AI Maestro uses dtach (a lightweight session manager) instead of tmux. This means:
+- No tmux configuration required
+- Lighter resource footprint (~1MB vs ~10MB per session)
+- Simpler architecture (1000 LOC vs 100K+ LOC)
+- All the session persistence you need, none of the complexity you don't
 
 ---
 
@@ -538,20 +494,20 @@ Think of it as tmux + organization + notes + visual hierarchy. You still have fu
 ### macOS
 - **macOS 12.0+** (Monterey or later)
 - **Node.js 18.17+**
-- **tmux 3.0+**
+- **dtach** (bundled - no manual installation needed)
 - **Your favorite AI agent** (Claude, Aider, Cursor, Copilot, etc.)
 
 ### Windows
 - **Windows 10 version 2004+** or **Windows 11**
 - **WSL2 (Windows Subsystem for Linux)** - [Installation Guide](./docs/WINDOWS-INSTALLATION.md)
 - **Node.js 18.17+** (installed in WSL2)
-- **tmux 3.0+** (installed in WSL2)
+- **dtach** (bundled - no manual installation needed)
 - **Your favorite AI agent** (Claude, Aider, Cursor, Copilot, etc.)
 
 ### Linux
 - **Ubuntu 20.04+** / **Debian 11+** / **Fedora 35+** or equivalent
 - **Node.js 18.17+**
-- **tmux 3.0+**
+- **dtach** (bundled - no manual installation needed)
 - **Your favorite AI agent** (Claude, Aider, Cursor, Copilot, etc.)
 
 ---
@@ -562,6 +518,7 @@ Built with modern, battle-tested tools:
 
 - **Frontend**: Next.js 14, React 18, Tailwind CSS
 - **Terminal**: xterm.js with WebGL acceleration
+- **Session Engine**: Rust-based IPC server with dtach integration
 - **Backend**: Custom Node.js server with WebSocket
 - **Font**: Space Grotesk for a modern feel
 - **Icons**: lucide-react
@@ -751,13 +708,13 @@ ENABLE_LOGGING=false
 **Built-in protections:**
 - No data sent over the internet (runs 100% locally)
 - Notes stored in browser localStorage only
-- tmux sessions run with your user permissions
+- Sessions run with your user permissions
 - No external API calls or telemetry
 
 **Recommended practices:**
 - Use localhost-only mode when on untrusted networks
 - Never expose port 23000 to the internet (no port forwarding)
-- Review tmux session permissions regularly
+- Review session permissions regularly
 - Consider using a firewall to restrict port 23000 access
 
 **⚠️ Not for production use** without adding:
@@ -811,7 +768,7 @@ Built with amazing open source tools:
 - [Claude Code](https://claude.ai) by Anthropic
 - [xterm.js](https://xtermjs.org/) - Terminal emulator
 - [Next.js](https://nextjs.org/) - React framework
-- [tmux](https://github.com/tmux/tmux) - Terminal multiplexer
+- [dtach](http://dtach.sourceforge.net/) - Lightweight session manager
 - [lucide-react](https://lucide.dev/) - Icons
 
 ---

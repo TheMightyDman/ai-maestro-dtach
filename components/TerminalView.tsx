@@ -308,7 +308,7 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
     }
   }, [terminal, selectionFirst, setSelectionFirstMode])
 
-  // Convert wheel events into tmux scroll commands when selection-first is active
+  // Handle wheel events for scrolling when selection-first mode is active
   useEffect(() => {
     if (!selectionFirst) {
       return undefined
