@@ -90,6 +90,19 @@ Environment variables:
 
 **Format**: JSON-RPC-style messages (one per line)
 
+### Quick Example
+
+```bash
+# Using bash script
+./examples/session-cli.sh list
+./examples/session-cli.sh create my-session /tmp
+./examples/session-cli.sh info my-session
+
+# Using Node.js client
+node examples/session-client.mjs list
+node examples/session-client.mjs create my-session /tmp
+```
+
 ### Request
 
 ```json
@@ -112,7 +125,7 @@ Environment variables:
 }
 ```
 
-### Methods
+### Available Methods
 
 - `list_sessions`: Get all sessions
 - `create_session`: Create new session
@@ -121,7 +134,9 @@ Environment variables:
 - `get_metadata`: Get session metadata
 - `get_scrollback`: Read scrollback history
 
-See `src/types.rs` for full protocol specification.
+**Full Protocol Documentation**: See [docs/IPC-PROTOCOL.md](docs/IPC-PROTOCOL.md)
+
+**Example Clients**: See [examples/](examples/)
 
 ## Testing
 
@@ -139,11 +154,29 @@ RUST_LOG=debug cargo test -- --nocapture
 ## Development Status
 
 - ✅ **Phase 0 (Complete)**: Foundation - Types, modules, build system
-- 🚧 **Phase 1 (In Progress)**: IPC server, integration tests
-- ⏳ **Phase 2**: Gateway integration
+- ✅ **Phase 1 (Complete)**: IPC server, integration tests, documentation
+- ⏳ **Phase 2 (Next)**: Gateway integration
 - ⏳ **Phase 3**: API migration
-- ⏳ **Phase 4**: Documentation
+- ⏳ **Phase 4**: Documentation refresh
 - ⏳ **Phase 5**: Release
+
+## Quick Start
+
+```bash
+# 1. Build dtach and engine
+npm run build:dtach
+npm run build:engine
+
+# 2. Start engine
+npm run engine:dev
+
+# 3. In another terminal, test IPC
+./services/session-engine/examples/session-cli.sh health
+./services/session-engine/examples/session-cli.sh list
+
+# 4. Create a test session
+./services/session-engine/examples/session-cli.sh create test-session /tmp
+```
 
 ## Contributing
 

@@ -15,6 +15,9 @@ nix = { version = "0.27", features = ["process", "signal", "socket"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+[dev-dependencies]
+uuid = { version = "1.6", features = ["v4"] }
+
 [profile.release]
 strip = true
 lto = true

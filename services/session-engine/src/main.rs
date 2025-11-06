@@ -3,6 +3,7 @@
 
 mod dtach;
 mod engine;
+mod ipc;
 mod registry;
 mod scrollback;
 mod types;
@@ -13,8 +14,10 @@ use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 use engine::{EngineConfig, SessionEngine};
+use ipc::IpcServer;
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -33,17 +36,25 @@ fn main() -> Result<()> {
         .context("Failed to initialize session engine")?;
 
     info!("Session engine initialized successfully");
-
-    // For Phase 0, just verify the engine can be created
-    // In Phase 1, we'll add the IPC server here
-
-    info!("Session engine ready");
     info!("Sessions loaded: {}", engine.list_sessions().len());
 
-    // TODO: Start IPC server in Phase 1
+    // Create IPC server
+    let socket_path = std::env::var("AIMAESTRO_IPC_SOCKET")
+        .unwrap_or_else(|_| "/tmp/aimaestro-engine.sock".to_string());
+    let socket_path = PathBuf::from(socket_path);
+
+    let server = IpcServer::new(engine, socket_path.clone())
+        .context("Failed to create IPC server")?;
+
     println!("AI Maestro Session Engine v{}", env!("CARGO_PKG_VERSION"));
-    println!("Status: Ready (Phase 0 - Foundation)");
-    println!("Sessions: {}", engine.list_sessions().len());
+    println!("Status: Ready (Phase 1 - IPC Server Active)");
+    println!("IPC Socket: {:?}", socket_path);
+    println!();
+    println!("Listening for connections...");
+
+    // Start IPC server (blocking)
+    server.listen().await
+        .context("IPC server failed")?;
 
     Ok(())
 }
