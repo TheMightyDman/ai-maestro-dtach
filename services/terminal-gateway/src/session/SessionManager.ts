@@ -135,31 +135,14 @@ async function sessionExists(sessionName: string): Promise<boolean> {
 }
 
 async function capturePane(sessionName: string): Promise<Buffer> {
-  const attempts: Array<{ args: string[]; timeoutMs: number }> = [
-    { args: ['capture-pane', '-t', sessionName, '-p', '-S', '-1000', '-J', '-e'], timeoutMs: 3000 },
-    { args: ['capture-pane', '-t', sessionName, '-p', '-J', '-e'], timeoutMs: 2000 },
-    { args: ['capture-pane', '-t', sessionName, '-p', '-e'], timeoutMs: 2000 }
-  ]
-
-  let lastError: unknown = null
-
-  for (const attempt of attempts) {
-    try {
-      const result = await runTmuxCommand(attempt.args, { allowCodes: [1], timeoutMs: attempt.timeoutMs })
-      if (result.code === 1) {
-        return Buffer.alloc(0)
-      }
-      return Buffer.from(result.stdout ?? '', 'utf8')
-    } catch (error) {
-      lastError = error
-    }
+  try {
+    const client = getSessionEngineClient()
+    const result = await client.getScrollback(sessionName, 10000)
+    return Buffer.from(result.content, 'utf8')
+  } catch (error) {
+    // Session not found or no scrollback available
+    return Buffer.alloc(0)
   }
-
-  if (lastError) {
-    throw lastError
-  }
-
-  return Buffer.alloc(0)
 }
 
 export class SessionManager {
@@ -950,89 +933,28 @@ export class SessionManager {
       return
     }
 
-    const direction = lines < 0 ? 'scroll-up' : 'scroll-down'
-    let remaining = Math.abs(lines)
-    const maxPerCommand = 200
-
-    while (remaining > 0) {
-      const batch = Math.min(maxPerCommand, remaining)
-      remaining -= batch
-      try {
-        await runTmuxCommand(['send-keys', '-t', session.name, '-X', '-N', String(batch), direction], { timeoutMs: 1500 })
-        session.lastActivity = Date.now()
-      } catch (error) {
-        this.logError('scroll_command_failed', {
-          session: session.name,
-          direction,
-          batch,
-          error: error instanceof Error ? error.message : error
-        })
-        break
-      }
-    }
+    // dtach: Scrolling is handled client-side by xterm.js
+    // No need to send scroll commands to dtach
+    session.lastActivity = Date.now()
   }
 
   private async ensureCopyMode(session: SessionState): Promise<boolean> {
-    if (session.copyModeActive) {
-      return true
-    }
-    try {
-      const result = await runTmuxCommand(['copy-mode', '-t', session.name], { timeoutMs: 1500 })
-      if (result.code === 0) {
-        session.copyModeActive = true
-        return true
-      }
-      this.logError('copy_mode_failed', {
-        session: session.name,
-        code: result.code,
-        stderr: result.stderr
-      })
-    } catch (error) {
-      this.logError('copy_mode_failed', {
-        session: session.name,
-        error: error instanceof Error ? error.message : error
-      })
-    }
-    return false
+    // dtach: Scrolling is handled client-side by xterm.js
+    // No need for tmux copy-mode
+    return true
   }
 
   private async exitCopyMode(session: SessionState): Promise<void> {
-    try {
-      await runTmuxCommand(['send-keys', '-t', session.name, '-X', 'cancel'], { timeoutMs: 1500 })
-    } catch (error) {
-      this.logError('copy_mode_exit_failed', {
-        session: session.name,
-        error: error instanceof Error ? error.message : error
-      })
-    } finally {
-      session.copyModeActive = false
-    }
+    // dtach: Scrolling is handled client-side by xterm.js
+    // No need to exit copy-mode
+    session.copyModeActive = false
   }
 
   private async getScrollMetrics(session: SessionState): Promise<{ offset: number; limit: number } | null> {
-    try {
-      const result = await runTmuxCommand(
-        ['display-message', '-p', '-t', session.name, '#{scroll_position} #{history_size}'],
-        { timeoutMs: 1000 }
-      )
-      const raw = (result.stdout ?? '').trim()
-      if (!raw) {
-        return null
-      }
-      const [offsetRaw, limitRaw] = raw.split(/\s+/, 2)
-      const parsedOffset = Number.parseInt(offsetRaw ?? '0', 10)
-      const parsedLimit = Number.parseInt(limitRaw ?? '0', 10)
-      const offset = Number.isFinite(parsedOffset) && parsedOffset > 0 ? parsedOffset : 0
-      const limitCandidate = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : 0
-      const limit = Math.max(limitCandidate, offset)
-      return { offset, limit }
-    } catch (error) {
-      this.logError('scroll_metrics_failed', {
-        session: session.name,
-        error: error instanceof Error ? error.message : error
-      })
-      return null
-    }
+    // dtach: Scroll metrics are not available from dtach
+    // Client-side xterm.js handles scrolling via its own buffer
+    // Return null to indicate metrics are not available
+    return null
   }
 
   private async updateScrollStatus(session: SessionState, force = false): Promise<void> {

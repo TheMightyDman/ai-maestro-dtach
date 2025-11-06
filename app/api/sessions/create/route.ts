@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { persistSession } from '@/lib/session-persistence'
-import { normalizeSessionName, runTmuxCommand } from '@/lib/tmux'
+import { normalizeSessionName } from '@/lib/tmux'
+import { getSessionEngineClient } from '@/lib/session-engine-client'
 
 export async function POST(request: Request) {
   try {
@@ -19,19 +20,27 @@ export async function POST(request: Request) {
       )
     }
 
-    const hasSessionResult = await runTmuxCommand(['has-session', '-t', sessionName], { allowCodes: [1] })
-
-    if (hasSessionResult.code === 0) {
+    // Check if session already exists
+    const client = getSessionEngineClient()
+    try {
+      await client.getMetadata(sessionName)
+      // If we get here, session exists
       return NextResponse.json({ error: 'Session already exists' }, { status: 409 })
+    } catch {
+      // Session doesn't exist, continue with creation
     }
 
-    // Create new tmux session
+    // Create new session via engine
     // Default to current working directory if not specified
     const cwd = typeof workingDirectory === 'string' && workingDirectory.trim().length > 0
       ? workingDirectory
       : process.cwd()
 
-    await runTmuxCommand(['new-session', '-d', '-s', sessionName, '-c', cwd])
+    await client.createSession({
+      name: sessionName,
+      cwd,
+      env: {}
+    })
 
     // Persist session metadata
     persistSession({

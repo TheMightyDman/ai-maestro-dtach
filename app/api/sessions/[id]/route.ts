@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { unpersistSession } from '@/lib/session-persistence'
-import { normalizeSessionName, runTmuxCommand } from '@/lib/tmux'
+import { normalizeSessionName } from '@/lib/tmux'
+import { getSessionEngineClient } from '@/lib/session-engine-client'
 
 export const dynamic = 'force-dynamic'
 
@@ -20,15 +21,13 @@ export async function DELETE(
       )
     }
 
-    // Check if session exists
-    const existingCheck = await runTmuxCommand(['has-session', '-t', sessionName], { allowCodes: [1] })
-
-    if (existingCheck.code === 1) {
+    // Check if session exists and delete via engine
+    const client = getSessionEngineClient()
+    try {
+      await client.deleteSession(sessionName)
+    } catch (error) {
       return NextResponse.json({ error: 'Session not found' }, { status: 404 })
     }
-
-    // Kill the tmux session
-    await runTmuxCommand(['kill-session', '-t', sessionName])
 
     // Remove from persistence
     unpersistSession(sessionName)
