@@ -68,8 +68,9 @@ body {
 }
 
 .xterm .xterm-viewport {
-  overflow-y: scroll !important;
-  scrollbar-gutter: stable both-edges;
+  /* Hide native scrollbar to avoid double scrollbars.
+     We drive scrolling via wheel/gesture handlers and a single overlay thumb. */
+  overflow-y: hidden !important;
 }
 
 /* Ensure selection overlay sits above text layers */

@@ -37,7 +37,7 @@ import { PtySession } from './PtySession'
 import { metrics } from '../metrics'
 import { validateToken } from '../auth'
 import { normalizeSessionName } from '../session-utils'
-import { getSessionEngineClient } from '../../../lib/session-engine-client'
+import { getSessionEngineClient } from '../lib/session-engine-client'
 
 interface SessionManagerOptions {
   readonly ringBytes: number
@@ -129,8 +129,12 @@ async function sessionExists(sessionName: string): Promise<boolean> {
     const client = getSessionEngineClient()
     await client.getMetadata(sessionName)
     return true
-  } catch {
-    return false
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (/not found/i.test(message)) {
+      return false
+    }
+    throw new Error(message || 'Session engine unavailable')
   }
 }
 
@@ -154,6 +158,23 @@ export class SessionManager {
 
   constructor(options: Partial<SessionManagerOptions> = {}) {
     this.options = { ...DEFAULT_OPTIONS, ...options }
+    this.log('session_manager_boot', {
+      ringBytes: this.options.ringBytes,
+      highWater: this.options.highWater,
+      lowWater: this.options.lowWater,
+      historyChunkBytes: this.options.historyChunkBytes,
+      maxConcurrentReplays: this.options.maxConcurrentReplays
+    })
+  }
+
+  private updateSessionActivity(session: SessionState): void {
+    session.lastActivity = Date.now()
+    metrics.setSessionLastActivity(session.name, session.lastActivity)
+  }
+
+  private setSessionPaused(session: SessionState, paused: boolean): void {
+    session.paused = paused
+    metrics.setSessionPaused(session.name, paused)
   }
 
   private acquireIpSlot(ipAddress: string): boolean {
@@ -343,7 +364,7 @@ export class SessionManager {
         return
       }
     } catch (error) {
-      this.sendErrorAndClose(ctx, 'Failed to verify tmux session', error instanceof Error ? error.message : undefined)
+      this.sendErrorAndClose(ctx, 'Failed to reach session engine', error instanceof Error ? error.message : undefined)
       return
     }
 
@@ -352,7 +373,7 @@ export class SessionManager {
       this.sendErrorAndClose(ctx, 'Session is full', 'Too many viewers are attached right now')
       return
     }
-    session.lastActivity = Date.now()
+    this.updateSessionActivity(session)
 
     const clientId = crypto.randomUUID?.() ?? `client-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
     const clientState: ClientState = {
@@ -438,7 +459,7 @@ export class SessionManager {
       session.pendingScrollToBottom = true
     }
 
-    session.lastActivity = Date.now()
+    this.updateSessionActivity(session)
 
     this.scheduleScrollFlush(session)
   }
@@ -557,12 +578,14 @@ export class SessionManager {
 
     sessionState.pty = pty
     this.sessions.set(sessionName, sessionState)
+    metrics.sessionOpened(sessionName, sessionState.lastActivity)
     return sessionState
   }
 
   private handlePtyExit(session: SessionState, exitCode: number | null, signal: number | null) {
     this.sessions.delete(session.name)
     session.ring.clear()
+    metrics.sessionClosed(session.name)
     this.log('session_exit', {
       session: session.name,
       exitCode,
@@ -581,7 +604,7 @@ export class SessionManager {
       return
     }
 
-    session.lastActivity = Date.now()
+    this.updateSessionActivity(session)
     session.ring.append(chunk)
     metrics.recordBytesOut(session.name, chunk.length)
 
@@ -809,7 +832,7 @@ export class SessionManager {
     })
 
     if (shouldPause && !session.paused) {
-      session.paused = true
+      this.setSessionPaused(session, true)
       session.pty.pause()
       metrics.recordPtyPause(session.name)
       this.log('pty_pause', { session: session.name })
@@ -822,7 +845,7 @@ export class SessionManager {
         return buffered <= this.options.lowWater
       })
       if (shouldResume) {
-        session.paused = false
+        this.setSessionPaused(session, false)
         session.pty.resume()
         metrics.recordPtyResume(session.name)
         this.log('pty_resume', { session: session.name })
@@ -935,7 +958,7 @@ export class SessionManager {
 
     // dtach: Scrolling is handled client-side by xterm.js
     // No need to send scroll commands to dtach
-    session.lastActivity = Date.now()
+    this.updateSessionActivity(session)
   }
 
   private async ensureCopyMode(session: SessionState): Promise<boolean> {
@@ -1064,14 +1087,26 @@ export class SessionManager {
       session.pendingScrollToBottom = false
       session.pty.dispose()
       session.ring.clear()
+      metrics.sessionClosed(session.name)
     })
     this.sessions.clear()
   }
 
-  activitySnapshot(): Array<{ session: string; lastActivity: number }> {
+  activitySnapshot(): Array<{
+    session: string
+    clients: number
+    leaderId: string | null
+    paused: boolean
+    lastActivity: number
+    lastActivityIso: string
+  }> {
     return Array.from(this.sessions.values()).map((session) => ({
       session: session.name,
-      lastActivity: session.lastActivity
+      clients: session.clients.size,
+      leaderId: session.leaderId,
+      paused: session.paused,
+      lastActivity: session.lastActivity,
+      lastActivityIso: new Date(session.lastActivity).toISOString()
     }))
   }
 }

@@ -49,6 +49,8 @@ chmod +x *.sh
 
 ## Available Scripts
 
+> All commands support `--session <name>` and `--api-url <url>` if you need to override the defaults from `AIMAESTRO_SESSION` / `AIMAESTRO_API_URL`.
+
 ### 1. send-aimaestro-message.sh
 
 Send persistent, structured messages to another agent's inbox.
@@ -83,7 +85,7 @@ Display all messages in your session's inbox.
 
 **Usage:**
 ```bash
-check-and-show-messages.sh
+check-and-show-messages.sh [--session name] [--api-url url]
 ```
 
 **Output:**
@@ -105,7 +107,7 @@ Quick check for unread message count.
 
 **Usage:**
 ```bash
-check-new-messages-arrived.sh
+check-new-messages-arrived.sh [--session name]
 ```
 
 **Output:**
@@ -182,9 +184,22 @@ send-aimaestro-message.sh frontend-dev \
 
 ## Requirements
 
-- AI Maestro running on `http://localhost:23000`
-- tmux session with valid session name
-- `curl` and `jq` installed
+- AI Maestro running on `http://localhost:23000` (or override with `--api-url`)
+- Session managed by the AI Maestro Session Engine (`AIMAESTRO_SESSION` exported automatically)
+- `curl` installed
+- `jq` recommended (rich formatting); scripts fall back to plain summaries for counts if `jq` is missing
+
+## Auto-check on Attach/Start
+
+Add the following snippet to your shell profile (`~/.bashrc`, `~/.zshrc`, etc.) to automatically surface unread messages whenever a session starts:
+
+```bash
+if [[ -n "$AIMAESTRO_SESSION" ]] && command -v check-aimaestro-messages.sh >/dev/null; then
+  check-aimaestro-messages.sh --session "$AIMAESTRO_SESSION"
+fi
+```
+
+For full message previews inside the terminal UI, run `check-and-show-messages.sh` whenever you attach to a session.
 
 ## Troubleshooting
 

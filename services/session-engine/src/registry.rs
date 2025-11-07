@@ -41,8 +41,7 @@ impl SessionRegistry {
     pub fn new(file_path: PathBuf) -> Result<Self> {
         // Ensure parent directory exists
         if let Some(parent) = file_path.parent() {
-            std::fs::create_dir_all(parent)
-                .context("Failed to create registry directory")?;
+            std::fs::create_dir_all(parent).context("Failed to create registry directory")?;
         }
 
         // Load existing registry or create empty
@@ -61,11 +60,10 @@ impl SessionRegistry {
 
     /// Load registry from disk
     fn load_from_disk(path: &PathBuf) -> Result<HashMap<SessionId, SessionEntry>> {
-        let contents = std::fs::read_to_string(path)
-            .context("Failed to read registry file")?;
+        let contents = std::fs::read_to_string(path).context("Failed to read registry file")?;
 
-        let registry: RegistryFile = serde_json::from_str(&contents)
-            .context("Failed to parse registry JSON")?;
+        let registry: RegistryFile =
+            serde_json::from_str(&contents).context("Failed to parse registry JSON")?;
 
         debug!("Loaded {} sessions from registry", registry.sessions.len());
 
@@ -79,11 +77,10 @@ impl SessionRegistry {
             sessions: self.sessions.clone(),
         };
 
-        let contents = serde_json::to_string_pretty(&registry)
-            .context("Failed to serialize registry")?;
+        let contents =
+            serde_json::to_string_pretty(&registry).context("Failed to serialize registry")?;
 
-        std::fs::write(&self.file_path, contents)
-            .context("Failed to write registry file")?;
+        std::fs::write(&self.file_path, contents).context("Failed to write registry file")?;
 
         debug!("Saved {} sessions to registry", self.sessions.len());
 
@@ -166,8 +163,7 @@ impl SessionRegistry {
     /// * `Ok(())` on success
     /// * `Err(anyhow::Error)` if session not found
     pub fn update_status(&mut self, id: &SessionId, status: SessionStatus) -> Result<()> {
-        let session = self.sessions.get_mut(id)
-            .context("Session not found")?;
+        let session = self.sessions.get_mut(id).context("Session not found")?;
 
         session.status = status;
         self.save_to_disk()?;
@@ -184,8 +180,7 @@ impl SessionRegistry {
     /// * `Ok(())` on success
     /// * `Err(anyhow::Error)` if session not found
     pub fn update_activity(&mut self, id: &SessionId) -> Result<()> {
-        let session = self.sessions.get_mut(id)
-            .context("Session not found")?;
+        let session = self.sessions.get_mut(id).context("Session not found")?;
 
         session.last_activity = chrono::Utc::now();
         self.save_to_disk()?;

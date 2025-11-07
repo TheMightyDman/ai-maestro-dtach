@@ -1,176 +1,138 @@
 #!/bin/bash
+# Forward a message via the AI Maestro messaging API
 
-# forward-aimaestro-message.sh
-# Forward a message from the current session to another session
-#
-# Usage:
-#   forward-aimaestro-message.sh <message-id> <recipient-session> "[optional note]"
-#
-# Examples:
-#   forward-aimaestro-message.sh msg-123456 backend-architect
-#   forward-aimaestro-message.sh msg-123456 frontend-dev "FYI - frontend related"
-#   forward-aimaestro-message.sh latest backend-architect "Please handle this"
-#
-# Note: Use "latest" as message-id to forward the most recent message in inbox
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/_common.sh"
 
-set -e
-
-MESSAGE_DIR="$HOME/.aimaestro/messages"
-CURRENT_SESSION="${AIMAESTRO_SESSION:-unknown}"
-
-# Color codes for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
-
-# Function to show usage
-show_usage() {
-  echo "Usage: forward-aimaestro-message.sh <message-id|latest> <recipient-session> \"[optional note]\""
-  echo ""
-  echo "Examples:"
-  echo "  forward-aimaestro-message.sh msg-123456 backend-architect"
-  echo "  forward-aimaestro-message.sh latest frontend-dev \"Please review\""
-  echo ""
-  echo "Use 'latest' to forward the most recent message"
+ai_msg_have_jq || {
+  echo "Error: jq is required for forward-aimaestro-message.sh. Install with: brew install jq" >&2
   exit 1
 }
 
-# Check arguments
-if [ $# -lt 2 ]; then
-  echo -e "${RED}❌ Error: Missing required arguments${NC}"
-  show_usage
-fi
+SESSION_OVERRIDE=""
+API_OVERRIDE=""
+POSITIONAL=()
 
-MESSAGE_ID="$1"
-RECIPIENT="$2"
-FORWARD_NOTE="${3:-}"
+print_usage() {
+  cat <<'EOF'
+Usage: forward-aimaestro-message.sh [options] <message-id|latest> <recipient-session> "[optional note]"
 
-# Check if current session is known
-if [ "$CURRENT_SESSION" = "unknown" ]; then
-  echo -e "${RED}❌ Error: Not running in a tmux session${NC}"
+Options:
+  --session <name>   Override session (defaults to $AIMAESTRO_SESSION)
+  --api-url <url>    Override API base URL
+  --help, -h         Show this help message
+
+Use "latest" as the message ID to forward the most recent inbox message.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --session)
+      SESSION_OVERRIDE="$2"
+      shift 2
+      ;;
+    --api-url)
+      API_OVERRIDE="$2"
+      shift 2
+      ;;
+    --help|-h)
+      print_usage
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      print_usage
+      exit 1
+      ;;
+    *)
+      POSITIONAL+=("$1")
+      shift
+      ;;
+  esac
+done
+
+while [[ $# -gt 0 ]]; do
+  POSITIONAL+=("$1")
+  shift
+done
+
+if [ ${#POSITIONAL[@]} -lt 2 ]; then
+  print_usage
   exit 1
 fi
 
-# Check if forwarding to same session
-if [ "$CURRENT_SESSION" = "$RECIPIENT" ]; then
-  echo -e "${RED}❌ Error: Cannot forward message to the same session${NC}"
+MESSAGE_ID="${POSITIONAL[0]}"
+RECIPIENT="${POSITIONAL[1]}"
+FORWARD_NOTE="${POSITIONAL[2]:-}"
+
+SESSION="$(ai_msg_resolve_session "$SESSION_OVERRIDE")"
+API_BASE_URL="$(ai_msg_resolve_api_base "$API_OVERRIDE")"
+
+if [ "$SESSION" = "$RECIPIENT" ]; then
+  echo "Error: Cannot forward to the same session." >&2
   exit 1
 fi
 
-# Get inbox directory
-INBOX_DIR="$MESSAGE_DIR/inbox/$CURRENT_SESSION"
+resolve_message_id() {
+  if [ "$MESSAGE_ID" != "latest" ]; then
+    echo "$MESSAGE_ID"
+    return
+  fi
 
-if [ ! -d "$INBOX_DIR" ]; then
-  echo -e "${RED}❌ Error: Inbox not found for session: $CURRENT_SESSION${NC}"
-  exit 1
-fi
-
-# Resolve message ID (handle "latest" keyword)
-if [ "$MESSAGE_ID" = "latest" ]; then
-  # Get most recent message in inbox
-  LATEST_FILE=$(ls -t "$INBOX_DIR"/*.json 2>/dev/null | head -1)
-  if [ -z "$LATEST_FILE" ]; then
-    echo -e "${RED}❌ Error: No messages found in inbox${NC}"
+  LIST=$(curl --silent --show-error --fail --get "${API_BASE_URL}/api/messages" \
+    --data-urlencode "session=${SESSION}" \
+    --data-urlencode "box=inbox" 2>&1)
+  if [ $? -ne 0 ]; then
+    echo "❌ Unable to fetch inbox to determine latest message." >&2
     exit 1
   fi
-  MESSAGE_ID=$(basename "$LATEST_FILE" .json)
-  echo -e "${BLUE}📬 Forwarding latest message: $MESSAGE_ID${NC}"
-fi
-
-# Check if message file exists
-MESSAGE_FILE="$INBOX_DIR/${MESSAGE_ID}.json"
-if [ ! -f "$MESSAGE_FILE" ]; then
-  echo -e "${RED}❌ Error: Message not found: $MESSAGE_ID${NC}"
-  exit 1
-fi
-
-# Read original message details using jq
-if ! command -v jq &> /dev/null; then
-  echo -e "${RED}❌ Error: jq is required but not installed${NC}"
-  echo "Install with: brew install jq"
-  exit 1
-fi
-
-ORIGINAL_FROM=$(jq -r '.from' "$MESSAGE_FILE")
-ORIGINAL_TO=$(jq -r '.to' "$MESSAGE_FILE")
-ORIGINAL_SUBJECT=$(jq -r '.subject' "$MESSAGE_FILE")
-ORIGINAL_MESSAGE=$(jq -r '.content.message' "$MESSAGE_FILE")
-ORIGINAL_TIMESTAMP=$(jq -r '.timestamp' "$MESSAGE_FILE")
-ORIGINAL_PRIORITY=$(jq -r '.priority' "$MESSAGE_FILE")
-
-# Generate new message ID
-NEW_MESSAGE_ID="msg-$(date +%s)-$(LC_ALL=C tr -dc 'a-z0-9' < /dev/urandom | head -c 7)"
-
-# Create recipient's inbox directory if it doesn't exist
-RECIPIENT_INBOX="$MESSAGE_DIR/inbox/$RECIPIENT"
-mkdir -p "$RECIPIENT_INBOX"
-
-# Build forwarded content
-FORWARDED_CONTENT=""
-if [ -n "$FORWARD_NOTE" ]; then
-  FORWARDED_CONTENT="$FORWARD_NOTE
-
-"
-fi
-
-FORWARDED_CONTENT+="--- Forwarded Message ---
-From: $ORIGINAL_FROM
-To: $ORIGINAL_TO
-Sent: $ORIGINAL_TIMESTAMP
-Subject: $ORIGINAL_SUBJECT
-
-$ORIGINAL_MESSAGE
---- End of Forwarded Message ---"
-
-# Escape JSON special characters
-FORWARDED_CONTENT_JSON=$(echo "$FORWARDED_CONTENT" | jq -Rs .)
-FORWARD_NOTE_JSON=$(echo "$FORWARD_NOTE" | jq -Rs .)
-
-# Create forwarded message JSON
-cat > "$RECIPIENT_INBOX/${NEW_MESSAGE_ID}.json" <<EOF
-{
-  "id": "$NEW_MESSAGE_ID",
-  "from": "$CURRENT_SESSION",
-  "to": "$RECIPIENT",
-  "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
-  "subject": "Fwd: $ORIGINAL_SUBJECT",
-  "priority": "$ORIGINAL_PRIORITY",
-  "status": "unread",
-  "content": {
-    "type": "notification",
-    "message": $FORWARDED_CONTENT_JSON
-  },
-  "forwardedFrom": {
-    "originalMessageId": "$MESSAGE_ID",
-    "originalFrom": "$ORIGINAL_FROM",
-    "originalTo": "$ORIGINAL_TO",
-    "originalTimestamp": "$ORIGINAL_TIMESTAMP",
-    "forwardedBy": "$CURRENT_SESSION",
-    "forwardedAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
-    "forwardNote": $FORWARD_NOTE_JSON
-  }
+  if ai_msg_have_jq; then
+    ID=$(echo "$LIST" | jq -r '.messages[0].id // empty')
+  else
+    ID=$(echo "$LIST" | node -e 'const fs=require("fs"); const data=JSON.parse(fs.readFileSync(0,"utf8")); const msgs=Array.isArray(data.messages)?data.messages:[]; console.log(msgs[0]?.id||"");')
+  fi
+  if [ -z "$ID" ]; then
+    echo "No messages available to forward." >&2
+    exit 1
+  fi
+  echo "$ID"
 }
-EOF
 
-# Create copy in sender's sent folder
-SENT_DIR="$MESSAGE_DIR/sent/$CURRENT_SESSION"
-mkdir -p "$SENT_DIR"
-cp "$RECIPIENT_INBOX/${NEW_MESSAGE_ID}.json" "$SENT_DIR/fwd_${NEW_MESSAGE_ID}.json"
+MESSAGE_ID_RESOLVED="$(resolve_message_id)"
 
-# Send tmux notification to recipient
-NOTIFICATION_TEXT="📬 Forwarded message from $CURRENT_SESSION: Fwd: $ORIGINAL_SUBJECT"
-tmux send-keys -t "$RECIPIENT" "echo ''" C-m 2>/dev/null || true
-tmux send-keys -t "$RECIPIENT" "echo '$NOTIFICATION_TEXT'" C-m 2>/dev/null || true
-tmux send-keys -t "$RECIPIENT" "echo ''" C-m 2>/dev/null || true
+PAYLOAD=$(jq -n \
+  --arg id "$MESSAGE_ID_RESOLVED" \
+  --arg from "$SESSION" \
+  --arg to "$RECIPIENT" \
+  --arg note "$FORWARD_NOTE" \
+  '{
+    messageId: $id,
+    fromSession: $from,
+    toSession: $to
+  } + (if ($note | length) > 0 then {forwardNote: $note} else {} end)')
 
-# Success message
-echo -e "${GREEN}✅ Message forwarded successfully${NC}"
-echo -e "${BLUE}📨 Original: $ORIGINAL_SUBJECT${NC}"
-echo -e "${BLUE}📬 To: $RECIPIENT${NC}"
-echo -e "${BLUE}🆔 Forwarded Message ID: $NEW_MESSAGE_ID${NC}"
-
-if [ -n "$FORWARD_NOTE" ]; then
-  echo -e "${YELLOW}📝 Note: $FORWARD_NOTE${NC}"
+RESPONSE=$(ai_msg_http POST "${API_BASE_URL}/api/messages/forward" "$PAYLOAD")
+if [ $? -ne 0 ]; then
+  exit 1
 fi
+
+HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+BODY=$(echo "$RESPONSE" | sed '$d')
+
+if [ "$HTTP_CODE" = "200" ]; then
+  SUBJECT=$(echo "$BODY" | jq -r '.forwardedMessage.subject // "Message"')
+  echo "✅ Forwarded \"$SUBJECT\" to $RECIPIENT"
+  exit 0
+fi
+
+ERROR_MSG=$(echo "$BODY" | jq -r '.error // empty')
+echo "❌ Failed to forward message (HTTP $HTTP_CODE)" >&2
+if [ -n "$ERROR_MSG" ]; then
+  echo "   Error: $ERROR_MSG" >&2
+fi
+exit 1

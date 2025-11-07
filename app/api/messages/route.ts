@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { z } from 'zod'
 import {
   sendMessage,
   listInboxMessages,
@@ -12,6 +13,52 @@ import {
   getMessageStats,
   listSessionsWithMessages,
 } from '@/lib/messageQueue'
+import type { Message } from '@/lib/messageQueue'
+
+const sessionNameSchema = z
+  .string()
+  .min(1, 'Session name is required')
+  .regex(/^[A-Za-z0-9_-]+$/, 'Session name can only include letters, numbers, underscores, or hyphens')
+
+const prioritySchema = z.enum(['low', 'normal', 'high', 'urgent'])
+const statusSchema = z.enum(['unread', 'read', 'archived'])
+const messageTypeSchema = z.enum(['request', 'response', 'notification', 'update'])
+
+const messageContentSchema = z.object({
+  type: messageTypeSchema,
+  message: z.string().min(1, 'Message body cannot be empty'),
+  context: z.record(z.any()).optional(),
+  attachments: z
+    .array(
+      z.object({
+        name: z.string().min(1),
+        path: z.string().min(1),
+        type: z.string().min(1),
+      })
+    )
+    .optional(),
+})
+
+const sendMessageSchema = z.object({
+  from: sessionNameSchema,
+  to: sessionNameSchema,
+  subject: z.string().min(1).max(240),
+  priority: prioritySchema.optional(),
+  inReplyTo: z.string().optional(),
+  content: messageContentSchema,
+})
+
+const forwardMessageSchema = z.object({
+  messageId: z.string().min(1),
+  fromSession: sessionNameSchema,
+  toSession: sessionNameSchema,
+  forwardNote: z.string().optional(),
+})
+
+function validationError(error: z.ZodError) {
+  const issues = error.issues.map((issue) => issue.message).join('; ')
+  return NextResponse.json({ error: issues }, { status: 422 })
+}
 
 /**
  * GET /api/messages?session=<sessionName>&status=<status>&from=<from>&box=<inbox|sent>
@@ -22,11 +69,20 @@ export async function GET(request: NextRequest) {
   const sessionName = searchParams.get('session')
   const messageId = searchParams.get('id')
   const action = searchParams.get('action')
-  const box = searchParams.get('box') || 'inbox' // 'inbox' or 'sent'
+  const boxParam = searchParams.get('box') || 'inbox'
+  const boxResult = z.enum(['inbox', 'sent']).safeParse(boxParam)
+  if (!boxResult.success) {
+    return validationError(boxResult.error)
+  }
+  const box = boxResult.data
 
   // Get specific message
   if (sessionName && messageId) {
-    const message = await getMessage(sessionName, messageId, box as 'inbox' | 'sent')
+    const validatedSession = sessionNameSchema.safeParse(sessionName)
+    if (!validatedSession.success) {
+      return validationError(validatedSession.error)
+    }
+    const message = await getMessage(validatedSession.data, messageId, box)
     if (!message) {
       return NextResponse.json({ error: 'Message not found' }, { status: 404 })
     }
@@ -35,19 +91,31 @@ export async function GET(request: NextRequest) {
 
   // Get unread count (inbox only)
   if (action === 'unread-count' && sessionName) {
-    const count = await getUnreadCount(sessionName)
+    const validatedSession = sessionNameSchema.safeParse(sessionName)
+    if (!validatedSession.success) {
+      return validationError(validatedSession.error)
+    }
+    const count = await getUnreadCount(validatedSession.data)
     return NextResponse.json({ count })
   }
 
   // Get sent count
   if (action === 'sent-count' && sessionName) {
-    const count = await getSentCount(sessionName)
+    const validatedSession = sessionNameSchema.safeParse(sessionName)
+    if (!validatedSession.success) {
+      return validationError(validatedSession.error)
+    }
+    const count = await getSentCount(validatedSession.data)
     return NextResponse.json({ count })
   }
 
   // Get message stats
   if (action === 'stats' && sessionName) {
-    const stats = await getMessageStats(sessionName)
+    const validatedSession = sessionNameSchema.safeParse(sessionName)
+    if (!validatedSession.success) {
+      return validationError(validatedSession.error)
+    }
+    const stats = await getMessageStats(validatedSession.data)
     return NextResponse.json(stats)
   }
 
@@ -61,22 +129,40 @@ export async function GET(request: NextRequest) {
   if (!sessionName) {
     return NextResponse.json({ error: 'Session name required' }, { status: 400 })
   }
+  const validatedSession = sessionNameSchema.safeParse(sessionName)
+  if (!validatedSession.success) {
+    return validationError(validatedSession.error)
+  }
+  const normalizedSession = validatedSession.data
 
   // List sent messages
   if (box === 'sent') {
-    const priority = searchParams.get('priority') as 'low' | 'normal' | 'high' | 'urgent' | undefined
+    const priorityParam = searchParams.get('priority')
     const to = searchParams.get('to') || undefined
+    const priority =
+      priorityParam && prioritySchema.safeParse(priorityParam).success
+        ? (priorityParam as Message['priority'])
+        : undefined
 
-    const messages = await listSentMessages(sessionName, { priority, to })
+    const messages = await listSentMessages(normalizedSession, { priority, to })
     return NextResponse.json({ messages })
   }
 
   // List inbox messages (default)
-  const status = searchParams.get('status') as 'unread' | 'read' | 'archived' | undefined
-  const priority = searchParams.get('priority') as 'low' | 'normal' | 'high' | 'urgent' | undefined
+  const statusParam = searchParams.get('status')
+  const priorityParam = searchParams.get('priority')
   const from = searchParams.get('from') || undefined
 
-  const messages = await listInboxMessages(sessionName, { status, priority, from })
+  const status =
+    statusParam && statusSchema.safeParse(statusParam).success
+      ? (statusParam as Message['status'])
+      : undefined
+  const priority =
+    priorityParam && prioritySchema.safeParse(priorityParam).success
+      ? (priorityParam as Message['priority'])
+      : undefined
+
+  const messages = await listInboxMessages(normalizedSession, { status, priority, from })
   return NextResponse.json({ messages })
 }
 
@@ -86,24 +172,12 @@ export async function GET(request: NextRequest) {
  */
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json()
-    const { from, to, subject, content, priority, inReplyTo } = body
-
-    // Validate required fields
-    if (!from || !to || !subject || !content) {
-      return NextResponse.json(
-        { error: 'Missing required fields: from, to, subject, content' },
-        { status: 400 }
-      )
+    const json = await request.json()
+    const parsed = sendMessageSchema.safeParse(json)
+    if (!parsed.success) {
+      return validationError(parsed.error)
     }
-
-    // Validate content structure
-    if (!content.type || !content.message) {
-      return NextResponse.json(
-        { error: 'Content must have type and message fields' },
-        { status: 400 }
-      )
-    }
+    const { from, to, subject, content, priority, inReplyTo } = parsed.data
 
     const message = await sendMessage(from, to, subject, content, { priority, inReplyTo })
 
@@ -131,15 +205,24 @@ export async function PATCH(request: NextRequest) {
     )
   }
 
+  const validatedSession = sessionNameSchema.safeParse(sessionName)
+  if (!validatedSession.success) {
+    return validationError(validatedSession.error)
+  }
+
+  if (!action) {
+    return NextResponse.json({ error: 'Action is required' }, { status: 400 })
+  }
+
   try {
     let success = false
 
     switch (action) {
       case 'read':
-        success = await markMessageAsRead(sessionName, messageId)
+        success = await markMessageAsRead(validatedSession.data, messageId)
         break
       case 'archive':
-        success = await archiveMessage(sessionName, messageId)
+        success = await archiveMessage(validatedSession.data, messageId)
         break
       default:
         return NextResponse.json({ error: 'Invalid action' }, { status: 400 })
@@ -172,8 +255,13 @@ export async function DELETE(request: NextRequest) {
     )
   }
 
+  const validatedSession = sessionNameSchema.safeParse(sessionName)
+  if (!validatedSession.success) {
+    return validationError(validatedSession.error)
+  }
+
   try {
-    const success = await deleteMessage(sessionName, messageId)
+    const success = await deleteMessage(validatedSession.data, messageId)
 
     if (!success) {
       return NextResponse.json({ error: 'Message not found' }, { status: 404 })

@@ -273,6 +273,28 @@ export function useWebSocket(options: UseWebSocketOptions) {
     }, delay)
   }, [clearReconnectTimer, setConnectionErrorSafe, setErrorHintSafe, setPhaseSafe, setStatusSafe])
 
+  const closeEventHint = useCallback((event: CloseEvent): string | null => {
+    if (event.code === 1000) {
+      return null
+    }
+    switch (event.code) {
+      case 1008:
+        return 'Gateway rejected the request. Confirm TERMINAL_WS_TOKEN and session permissions.'
+      case 1011:
+        return 'Gateway hit an internal error. Check services/terminal-gateway logs.'
+      case 4000:
+        return 'Gateway heartbeat timed out. Ensure the session engine and dtach session are still running.'
+      case 1006:
+        return 'Network connection dropped. Verify reverse proxy/WebSocket settings.'
+      default:
+        break
+    }
+    if (!event.wasClean) {
+      return 'Connection closed unexpectedly. Check the gateway and your network link.'
+    }
+    return null
+  }, [])
+
   const handleControlMessage = useCallback((message: unknown) => {
     if (!message || typeof message !== 'object') {
       return
@@ -493,10 +515,11 @@ export function useWebSocket(options: UseWebSocketOptions) {
         if (!connectionErrorRef.current) {
           setConnectionErrorSafe(new Error('WebSocket encountered an error'))
         }
+        setErrorHintSafe('Network error while streaming terminal data. Check your network link and gateway logs.')
         onErrorRef.current?.(event)
       }
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         if (connectionId !== activeConnectionIdRef.current) {
           return
         }
@@ -513,6 +536,16 @@ export function useWebSocket(options: UseWebSocketOptions) {
         clearHandshakeTimer()
         onCloseRef.current?.()
 
+        const derivedHint = closeEventHint(event)
+        if (derivedHint) {
+          setErrorHintSafe(derivedHint)
+        }
+        if (!connectionErrorRef.current) {
+          const reason = event.reason && event.reason.trim().length > 0 ? event.reason : undefined
+          const message = reason ?? (event.wasClean ? 'Connection closed by gateway' : 'Connection closed unexpectedly')
+          setConnectionErrorSafe(new Error(message))
+        }
+
         if (shouldReconnectRef.current) {
           debugLog('close', { sessionId })
           scheduleReconnect()
@@ -527,10 +560,11 @@ export function useWebSocket(options: UseWebSocketOptions) {
       setStatusSafe('error')
       setPhaseSafe('error')
       setConnectionErrorSafe(error instanceof Error ? error : new Error('WebSocket connection failed'))
+      setErrorHintSafe('Unable to open WebSocket. Ensure services/terminal-gateway is running and reachable.')
       scheduleReconnect()
       return
     }
-  }, [clearHandshakeTimer, clearReconnectTimer, clearSocket, handleControlMessage, scheduleReconnect, sessionId, setConnectionErrorSafe, setErrorHintSafe, setIsConnectedSafe, setPhaseSafe, setStatusSafe])
+  }, [clearHandshakeTimer, clearReconnectTimer, clearSocket, closeEventHint, handleControlMessage, scheduleReconnect, sessionId, setConnectionErrorSafe, setErrorHintSafe, setIsConnectedSafe, setPhaseSafe, setStatusSafe])
 
   useEffect(() => {
     connectRef.current = connect
@@ -661,7 +695,7 @@ export function useWebSocket(options: UseWebSocketOptions) {
     setStatusSafe('disconnected')
     setPhaseSafe('idle')
     clearHandshakeTimer()
-  }, [clearReconnectTimer, clearSocket, setIsConnectedSafe, setPhaseSafe, setStatusSafe])
+  }, [clearHandshakeTimer, clearReconnectTimer, clearSocket, setIsConnectedSafe, setPhaseSafe, setStatusSafe])
 
   const connectionState = useMemo(() => ({
     isConnected,

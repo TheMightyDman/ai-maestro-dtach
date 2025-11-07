@@ -97,10 +97,7 @@ pub enum IpcRequest {
 
     /// Get scrollback history
     #[serde(rename = "get_scrollback")]
-    GetScrollback {
-        id: SessionId,
-        lines: usize,
-    },
+    GetScrollback { id: SessionId, lines: usize },
 }
 
 /// IPC Response types

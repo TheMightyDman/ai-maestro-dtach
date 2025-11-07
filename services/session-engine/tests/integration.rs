@@ -88,10 +88,7 @@ fn get_test_config() -> (PathBuf, PathBuf, String) {
 }
 
 /// Helper to start test engine in background
-async fn start_test_engine(
-    base_dir: PathBuf,
-    socket_path: PathBuf,
-) -> tokio::task::JoinHandle<()> {
+async fn start_test_engine(base_dir: PathBuf, socket_path: PathBuf) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         // This would start the actual engine
         // For now, we'll skip this as we can't run the full engine in tests

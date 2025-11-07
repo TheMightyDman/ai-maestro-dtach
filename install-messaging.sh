@@ -59,21 +59,23 @@ echo ""
 INSTALL_SCRIPTS=false
 INSTALL_SKILL=false
 PREREQUISITES_OK=true
+TMUX_AVAILABLE=false
 
-# Check tmux
+# Check tmux (optional for dtach-first installs)
 print_info "Checking for tmux..."
 if command -v tmux &> /dev/null; then
     TMUX_VERSION=$(tmux -V | cut -d' ' -f2)
     print_success "tmux installed (version $TMUX_VERSION)"
+    TMUX_AVAILABLE=true
 else
-    print_error "tmux not found"
-    echo "         Install with: brew install tmux"
-    PREREQUISITES_OK=false
+    print_warning "tmux not found (optional)"
+    echo "         dtach-first messaging works without tmux."
+    echo "         Install later with: brew install tmux"
 fi
 
-# Check if in a tmux session (optional, just a warning)
+# Check if in a tmux session (legacy hooks only)
 if [ -z "$TMUX" ]; then
-    print_warning "Not currently in a tmux session (optional, but recommended for testing)"
+    print_info "Not currently in a tmux session (only required for legacy tmux popups)"
 fi
 
 # Check curl
@@ -259,6 +261,11 @@ if [ "$INSTALL_SCRIPTS" = true ]; then
     else
         print_warning "Scripts not in PATH yet - restart terminal or run: source ~/.zshrc"
     fi
+
+    if [ "$TMUX_AVAILABLE" = false ]; then
+        print_warning "tmux not detected — legacy send-tmux-message.sh will be skipped until tmux is installed."
+        echo "         This is expected for dtach-only installs; CLI messaging still works."
+    fi
 fi
 
 # Verify skill
@@ -297,6 +304,14 @@ if [ "$INSTALL_SCRIPTS" = true ]; then
     echo "   $ send-aimaestro-message.sh backend-architect \"Test\" \"Hello!\" normal notification"
     echo "   $ check-and-show-messages.sh"
     echo ""
+    if [ "$TMUX_AVAILABLE" = true ]; then
+        echo "   Legacy tmux popups:"
+        echo "   $ send-tmux-message.sh \"Reminder\" \"Review the deploy plan\""
+        echo ""
+    else
+        echo "   (tmux not installed — dtach-first installs can ignore tmux popups.)"
+        echo ""
+    fi
     echo "   📖 Full guide: https://github.com/23blocks-OS/ai-maestro/tree/main/messaging_scripts"
     echo ""
 fi
@@ -318,6 +333,15 @@ echo ""
 echo "   📬 Quickstart: https://github.com/23blocks-OS/ai-maestro/blob/main/docs/AGENT-COMMUNICATION-QUICKSTART.md"
 echo "   📋 Best Practices: https://github.com/23blocks-OS/ai-maestro/blob/main/docs/AGENT-COMMUNICATION-GUIDELINES.md"
 echo "   📖 Complete Guide: https://github.com/23blocks-OS/ai-maestro/blob/main/docs/AGENT-MESSAGING-GUIDE.md"
+echo ""
+echo "   ℹ️ dtach installs: sessions will be detected via the Session Engine; tmux is optional."
+echo ""
+echo "4️⃣  Optional auto-check on shell start"
+echo ""
+echo "   Add this snippet to ~/.bashrc or ~/.zshrc to surface unread messages automatically:"
+echo "   if [[ -n \"\$AIMAESTRO_SESSION\" ]] && command -v check-aimaestro-messages.sh >/dev/null; then"
+echo "     check-aimaestro-messages.sh --session \"\$AIMAESTRO_SESSION\""
+echo "   fi"
 echo ""
 
 # Show warnings if any

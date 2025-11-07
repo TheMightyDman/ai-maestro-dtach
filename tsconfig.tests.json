@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": ".tmp-tests",
+    "noEmit": false,
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "incremental": false,
+    "tsBuildInfoFile": ".tmp-tests/tsconfig.buildinfo"
+  },
+  "include": [
+    "lib/messageQueue.ts",
+    "tests/messageQueue.test.ts"
+  ]
+}

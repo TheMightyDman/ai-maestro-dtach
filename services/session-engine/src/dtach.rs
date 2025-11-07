@@ -1,8 +1,9 @@
 // dtach Process Management
 // Wrapper for spawning and managing dtach sessions
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use tracing::{debug, info};
@@ -36,12 +37,14 @@ impl DtachProcess {
         cwd: PathBuf,
         env: HashMap<String, String>,
     ) -> Result<Self> {
-        info!("Spawning dtach session: socket={:?}, shell={:?}", socket, shell);
+        info!(
+            "Spawning dtach session: socket={:?}, shell={:?}",
+            socket, shell
+        );
 
         // Ensure socket parent directory exists
         if let Some(parent) = socket.parent() {
-            std::fs::create_dir_all(parent)
-                .context("Failed to create socket directory")?;
+            std::fs::create_dir_all(parent).context("Failed to create socket directory")?;
         }
 
         // Execute: dtach -n <socket> <shell>
@@ -60,11 +63,39 @@ impl DtachProcess {
             command.env(key, value);
         }
 
-        let output = command
-            .spawn()
-            .context("Failed to spawn dtach process")?;
+        let mut child = command.spawn().map_err(|error| {
+            anyhow!(
+                "Failed to spawn dtach process (binary: {:?}): {}",
+                dtach_binary,
+                error
+            )
+        })?;
 
-        let pid = output.id();
+        if let Ok(Some(status)) = child.try_wait() {
+            let mut stderr_output = String::new();
+            if let Some(mut stderr) = child.stderr.take() {
+                let _ = stderr.read_to_string(&mut stderr_output);
+            }
+            let message = if stderr_output.trim().is_empty() {
+                format!("dtach exited immediately with status {}", status)
+            } else {
+                format!(
+                    "dtach exited immediately with status {}: {}",
+                    status, stderr_output
+                )
+            };
+            return Err(anyhow!(message));
+        }
+
+        // Close stderr handle so dtach is not blocked if we don't read it
+        if let Some(mut stderr) = child.stderr.take() {
+            debug!("dtach starting, closing stderr pipe");
+            // Drain once to avoid blocking if there is already data
+            let mut buffer = String::new();
+            let _ = stderr.read_to_string(&mut buffer);
+        }
+
+        let pid = child.id();
 
         debug!("dtach spawned: pid={}, socket={:?}", pid, socket);
 
@@ -91,8 +122,7 @@ impl DtachProcess {
     pub fn kill(&self) -> Result<()> {
         if self.socket_path.exists() {
             info!("Killing dtach session: socket={:?}", self.socket_path);
-            std::fs::remove_file(&self.socket_path)
-                .context("Failed to remove dtach socket")?;
+            std::fs::remove_file(&self.socket_path).context("Failed to remove dtach socket")?;
         }
 
         Ok(())
@@ -124,7 +154,8 @@ pub fn validate_session_name(name: &str) -> bool {
         return false;
     }
 
-    name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    name.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 #[cfg(test)]

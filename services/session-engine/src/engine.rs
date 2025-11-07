@@ -3,9 +3,8 @@
 
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
-use std::collections::HashMap;
 use std::path::PathBuf;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 use crate::dtach::{validate_session_name, DtachProcess};
 use crate::registry::SessionRegistry;
@@ -40,11 +39,11 @@ impl SessionEngine {
         info!("Initializing session engine");
 
         let registry = SessionRegistry::new(config.registry_path)?;
-        let scrollback = ScrollbackManager::new(config.scrollback_dir, Some(config.max_scrollback_lines))?;
+        let scrollback =
+            ScrollbackManager::new(config.scrollback_dir, Some(config.max_scrollback_lines))?;
 
         // Ensure socket directory exists
-        std::fs::create_dir_all(&config.socket_dir)
-            .context("Failed to create socket directory")?;
+        std::fs::create_dir_all(&config.socket_dir).context("Failed to create socket directory")?;
 
         Ok(Self {
             registry,
@@ -70,7 +69,10 @@ impl SessionEngine {
     /// # Returns
     /// * `Ok(CreateSessionResponse)` on success
     /// * `Err(anyhow::Error)` on failure
-    pub fn create_session(&mut self, request: CreateSessionRequest) -> Result<CreateSessionResponse> {
+    pub fn create_session(
+        &mut self,
+        request: CreateSessionRequest,
+    ) -> Result<CreateSessionResponse> {
         // Validate session name
         if !validate_session_name(&request.name) {
             return Err(anyhow!("Invalid session name: must match ^[A-Za-z0-9_-]+$"));
@@ -105,7 +107,14 @@ impl SessionEngine {
             shell,
             request.cwd.clone(),
             env.clone(),
-        )?;
+        )
+        .map_err(|err| {
+            error!(
+                "Failed to spawn dtach for session {}: {}",
+                request.name, err
+            );
+            err
+        })?;
 
         // Create session entry
         let session = SessionEntry {
@@ -114,7 +123,7 @@ impl SessionEngine {
             cwd: request.cwd,
             created_at: Utc::now(),
             last_activity: Utc::now(),
-            env,  // Use the modified env with AIMAESTRO_SESSION
+            env, // Use the modified env with AIMAESTRO_SESSION
             agent_id: None,
             status: SessionStatus::Active,
             pid: dtach.pid,
@@ -140,17 +149,19 @@ impl SessionEngine {
     /// * `Ok(AttachSessionResponse)` on success
     /// * `Err(anyhow::Error)` if session not found
     pub fn attach_session(&mut self, id: &SessionId) -> Result<AttachSessionResponse> {
-        let session = self.registry.get(id)
-            .ok_or_else(|| anyhow!("Session not found: {}", id))?;
-
+        let socket_path = {
+            let session = self
+                .registry
+                .get(id)
+                .ok_or_else(|| anyhow!("Session not found: {}", id))?;
+            session.socket_path.clone()
+        };
         // Update last activity
         self.registry.update_activity(id)?;
 
         debug!("Attaching to session: {}", id);
 
-        Ok(AttachSessionResponse {
-            socket_path: session.socket_path.clone(),
-        })
+        Ok(AttachSessionResponse { socket_path })
     }
 
     /// Delete a session
@@ -164,7 +175,9 @@ impl SessionEngine {
     pub fn delete_session(&mut self, id: &SessionId) -> Result<DeleteSessionResponse> {
         info!("Deleting session: {}", id);
 
-        let session = self.registry.get(id)
+        let session = self
+            .registry
+            .get(id)
             .ok_or_else(|| anyhow!("Session not found: {}", id))?;
 
         // Kill dtach process
@@ -194,7 +207,8 @@ impl SessionEngine {
     /// * `Ok(SessionEntry)` on success
     /// * `Err(anyhow::Error)` if session not found
     pub fn get_metadata(&self, id: &SessionId) -> Result<SessionEntry> {
-        self.registry.get(id)
+        self.registry
+            .get(id)
             .cloned()
             .ok_or_else(|| anyhow!("Session not found: {}", id))
     }
@@ -256,8 +270,7 @@ pub struct EngineConfig {
 
 impl Default for EngineConfig {
     fn default() -> Self {
-        let home = std::env::var("HOME")
-            .unwrap_or_else(|_| "/tmp".to_string());
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
         let base_dir = PathBuf::from(home).join(".aimaestro");
 
         Self {
@@ -273,12 +286,14 @@ impl Default for EngineConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-
     #[test]
     fn test_engine_config_default() {
         let config = EngineConfig::default();
-        assert!(config.registry_path.to_str().unwrap().contains(".aimaestro"));
+        assert!(config
+            .registry_path
+            .to_str()
+            .unwrap()
+            .contains(".aimaestro"));
     }
 
     #[test]

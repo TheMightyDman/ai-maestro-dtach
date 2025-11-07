@@ -50,6 +50,23 @@ const replayQueueGauge = new client.Gauge({
   help: 'Number of clients waiting for history replay'
 })
 
+const activeSessionsGauge = new client.Gauge({
+  name: 'maestro_gateway_active_sessions',
+  help: 'Number of active dtach sessions managed by the gateway'
+})
+
+const sessionPausedGauge = new client.Gauge({
+  name: 'maestro_gateway_session_paused',
+  help: 'Whether a session is currently paused due to backpressure (1=yes)',
+  labelNames: ['session']
+})
+
+const sessionLastActivityGauge = new client.Gauge({
+  name: 'maestro_gateway_session_last_activity_timestamp',
+  help: 'Last PTY activity timestamp per session (unix seconds)',
+  labelNames: ['session']
+})
+
 register.registerMetric(connectedClientsGauge)
 register.registerMetric(bytesOutCounter)
 register.registerMetric(replayBytesCounter)
@@ -58,6 +75,9 @@ register.registerMetric(ptyResumeCounter)
 register.registerMetric(ackBytesCounter)
 register.registerMetric(activeReplayGauge)
 register.registerMetric(replayQueueGauge)
+register.registerMetric(activeSessionsGauge)
+register.registerMetric(sessionPausedGauge)
+register.registerMetric(sessionLastActivityGauge)
 
 export const metrics = {
   clientJoined(session: string) {
@@ -65,6 +85,13 @@ export const metrics = {
   },
   clientLeft(session: string) {
     connectedClientsGauge.dec({ session })
+  },
+  resetSession(session: string) {
+    try {
+      connectedClientsGauge.remove({ session })
+      sessionPausedGauge.remove({ session })
+      sessionLastActivityGauge.remove({ session })
+    } catch {}
   },
   recordBytesOut(session: string, bytes: number) {
     if (bytes > 0) {
@@ -92,6 +119,21 @@ export const metrics = {
   },
   setReplayQueueLength(length: number) {
     replayQueueGauge.set(length)
+  },
+  sessionOpened(session: string, lastActivity: number) {
+    activeSessionsGauge.inc()
+    sessionPausedGauge.labels(session).set(0)
+    sessionLastActivityGauge.labels(session).set(lastActivity / 1000)
+  },
+  sessionClosed(session: string) {
+    activeSessionsGauge.dec()
+    metrics.resetSession(session)
+  },
+  setSessionPaused(session: string, paused: boolean) {
+    sessionPausedGauge.labels(session).set(paused ? 1 : 0)
+  },
+  setSessionLastActivity(session: string, timestampMs: number) {
+    sessionLastActivityGauge.labels(session).set(timestampMs / 1000)
   },
   async render(): Promise<string> {
     return register.metrics()

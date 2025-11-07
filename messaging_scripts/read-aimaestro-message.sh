@@ -1,91 +1,101 @@
 #!/bin/bash
 # AI Maestro - Read a specific message and mark as read
-# Usage: read-aimaestro-message.sh <message-id> [--no-mark-read]
 
-if [ $# -lt 1 ]; then
-  echo "Usage: read-aimaestro-message.sh <message-id> [--no-mark-read]"
-  echo ""
-  echo "Read a specific message from your inbox."
-  echo ""
-  echo "Arguments:"
-  echo "  message-id        The message ID to read"
-  echo ""
-  echo "Options:"
-  echo "  --no-mark-read   Don't mark the message as read (peek mode)"
-  echo "  --help, -h       Show this help message"
-  echo ""
-  echo "Examples:"
-  echo "  read-aimaestro-message.sh msg-1234567890-abc        # Read and mark as read"
-  echo "  read-aimaestro-message.sh msg-1234567890-abc --no-mark-read  # Just peek"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/_common.sh"
+
+ai_msg_have_jq || {
+  echo "Error: jq is required for read-aimaestro-message.sh. Install with: brew install jq" >&2
   exit 1
-fi
+}
 
-MESSAGE_ID="$1"
 MARK_READ=true
+SESSION_OVERRIDE=""
+API_OVERRIDE=""
+MESSAGE_ID=""
 
-# Parse options
-shift
+print_usage() {
+  cat <<'EOF'
+Usage: read-aimaestro-message.sh [options] <message-id>
+
+Options:
+  --session <name>     Override session (defaults to $AIMAESTRO_SESSION)
+  --api-url <url>      Override API base URL
+  --no-mark-read       Do not mark the message as read (peek mode)
+  --help, -h           Show this help message
+EOF
+}
+
 while [[ $# -gt 0 ]]; do
-  case $1 in
+  case "$1" in
+    --session)
+      SESSION_OVERRIDE="$2"
+      shift 2
+      ;;
+    --api-url)
+      API_OVERRIDE="$2"
+      shift 2
+      ;;
     --no-mark-read)
       MARK_READ=false
       shift
       ;;
     --help|-h)
-      echo "Usage: read-aimaestro-message.sh <message-id> [--no-mark-read]"
+      print_usage
       exit 0
       ;;
-    *)
-      echo "Unknown option: $1"
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      print_usage
       exit 1
+      ;;
+    *)
+      if [ -z "$MESSAGE_ID" ]; then
+        MESSAGE_ID="$1"
+      else
+        echo "Unexpected argument: $1" >&2
+        print_usage
+        exit 1
+      fi
+      shift
       ;;
   esac
 done
 
-# Get current session from environment variable set by session engine
-SESSION="${AIMAESTRO_SESSION}"
-if [ -z "$SESSION" ]; then
-  echo "Error: Not in an AI Maestro session (AIMAESTRO_SESSION not set)"
+if [ -z "$MESSAGE_ID" ]; then
+  print_usage
   exit 1
 fi
 
-# Fetch message via API
-API_HOST=${AIMAESTRO_API_HOST:-127.0.0.1}
-API_PORT=${AIMAESTRO_API_PORT:-23000}
-API_BASE_URL=${AIMAESTRO_API_URL:-http://$API_HOST:$API_PORT}
+SESSION="$(ai_msg_resolve_session "$SESSION_OVERRIDE")"
+API_BASE_URL="$(ai_msg_resolve_api_base "$API_OVERRIDE")"
 
 RESPONSE=$(curl --silent --show-error --fail --get "${API_BASE_URL}/api/messages" \
   --data-urlencode "session=${SESSION}" \
   --data-urlencode "id=${MESSAGE_ID}" \
   --data-urlencode "box=inbox" 2>&1)
 
-# Check if curl failed
 if [ $? -ne 0 ]; then
-  echo "❌ Error: Failed to connect to AI Maestro API"
-  echo "   Make sure the dashboard is running (${API_BASE_URL})"
+  echo "❌ Error: Failed to connect to ${API_BASE_URL}" >&2
   exit 1
 fi
 
-# Check if response is valid JSON
-if ! echo "$RESPONSE" | jq empty 2>/dev/null; then
-  echo "❌ Error: Invalid response from API"
-  echo "   Response: $RESPONSE"
+if ! echo "$RESPONSE" | jq empty >/dev/null 2>&1; then
+  echo "❌ Error: Invalid response from API" >&2
+  echo "   Response: $RESPONSE" >&2
   exit 1
 fi
 
-# Check if message was found
-ERROR=$(echo "$RESPONSE" | jq -r '.error // empty' 2>/dev/null)
-if [ -n "$ERROR" ]; then
-  echo "❌ Error: $ERROR"
-  echo ""
-  echo "💡 Troubleshooting:"
-  echo "   - Check that the message ID is correct (full ID, not truncated)"
-  echo "   - Verify the message exists: check-aimaestro-messages.sh"
-  echo "   - Make sure you're in the correct tmux session"
+API_ERROR=$(echo "$RESPONSE" | jq -r '.error // empty')
+if [ -n "$API_ERROR" ]; then
+  echo "❌ Error: $API_ERROR" >&2
   exit 1
 fi
 
-# Extract message fields
 FROM=$(echo "$RESPONSE" | jq -r '.from')
 TO=$(echo "$RESPONSE" | jq -r '.to')
 SUBJECT=$(echo "$RESPONSE" | jq -r '.subject')
@@ -97,40 +107,33 @@ CONTEXT=$(echo "$RESPONSE" | jq -r '.content.context // empty')
 IN_REPLY_TO=$(echo "$RESPONSE" | jq -r '.inReplyTo // empty')
 FORWARDED=$(echo "$RESPONSE" | jq -r '.forwardedFrom // empty')
 
-# Get priority indicator
-PRIORITY_ICON=""
-case $PRIORITY in
+case "$PRIORITY" in
   urgent) PRIORITY_ICON="🔴" ;;
   high) PRIORITY_ICON="🟠" ;;
   normal) PRIORITY_ICON="🔵" ;;
-  low) PRIORITY_ICON="⚪" ;;
+  *) PRIORITY_ICON="⚪" ;;
 esac
 
-# Format timestamp
 FORMATTED_TIME=$(echo "$TIMESTAMP" | sed 's/T/ /' | sed 's/\..*//')
 
-# Display message
 echo "═══════════════════════════════════════════════════════════════"
 echo "📧 Message: $SUBJECT"
 echo "═══════════════════════════════════════════════════════════════"
 echo ""
-echo "From:     \033[36m$FROM\033[0m"
-echo "To:       \033[36m$TO\033[0m"
+echo "From:     $FROM"
+echo "To:       $TO"
 echo "Date:     $FORMATTED_TIME"
 echo "Priority: $PRIORITY_ICON $PRIORITY"
 echo "Type:     $TYPE"
-
 if [ -n "$IN_REPLY_TO" ] && [ "$IN_REPLY_TO" != "null" ]; then
   echo "In Reply To: $IN_REPLY_TO"
 fi
-
 echo ""
 echo "───────────────────────────────────────────────────────────────"
 echo ""
 echo "$MESSAGE"
 echo ""
 
-# Show context if present
 if [ -n "$CONTEXT" ] && [ "$CONTEXT" != "null" ] && [ "$CONTEXT" != "{}" ]; then
   echo "───────────────────────────────────────────────────────────────"
   echo "📎 Context:"
@@ -139,7 +142,6 @@ if [ -n "$CONTEXT" ] && [ "$CONTEXT" != "null" ] && [ "$CONTEXT" != "{}" ]; then
   echo ""
 fi
 
-# Show forwarding info if present
 if [ -n "$FORWARDED" ] && [ "$FORWARDED" != "null" ]; then
   echo "───────────────────────────────────────────────────────────────"
   echo "↪️  Forwarded Message"
@@ -147,32 +149,27 @@ if [ -n "$FORWARDED" ] && [ "$FORWARDED" != "null" ]; then
   echo "Originally From: $(echo "$RESPONSE" | jq -r '.forwardedFrom.originalFrom')"
   echo "Originally To:   $(echo "$RESPONSE" | jq -r '.forwardedFrom.originalTo')"
   echo "Forwarded By:    $(echo "$RESPONSE" | jq -r '.forwardedFrom.forwardedBy')"
-
-  FORWARD_NOTE=$(echo "$RESPONSE" | jq -r '.forwardedFrom.forwardNote // empty')
-  if [ -n "$FORWARD_NOTE" ] && [ "$FORWARD_NOTE" != "null" ]; then
-    echo "Forward Note:    $FORWARD_NOTE"
+  NOTE=$(echo "$RESPONSE" | jq -r '.forwardedFrom.forwardNote // empty')
+  if [ -n "$NOTE" ] && [ "$NOTE" != "null" ]; then
+    echo "Forward Note:    $NOTE"
   fi
   echo ""
 fi
 
-echo "═══════════════════════════════════════════════════════════════"
-
-# Mark as read if requested
 if [ "$MARK_READ" = true ]; then
   MARK_RESPONSE=$(curl --silent --show-error --fail --request PATCH "${API_BASE_URL}/api/messages?session=${SESSION}&id=${MESSAGE_ID}&action=read" 2>&1)
   if [ $? -ne 0 ]; then
-    echo "⚠️  Warning: Could not mark message as read"
-    exit 0
-  fi
-  SUCCESS=$(echo "$MARK_RESPONSE" | jq -r '.success' 2>/dev/null)
-
-  if [ "$SUCCESS" = "true" ]; then
-    echo "✅ Message marked as read"
+    echo "⚠️  Warning: Could not mark message as read" >&2
   else
-    echo "⚠️  Warning: Could not mark message as read"
+    SUCCESS=$(echo "$MARK_RESPONSE" | jq -r '.success')
+    if [ "$SUCCESS" = "true" ]; then
+      echo "✅ Message marked as read"
+    else
+      echo "⚠️  Warning: Could not mark message as read"
+    fi
   fi
 else
-  echo "👁️  Message not marked as read (peek mode)"
+  echo "👁️  Peek mode — message left unread"
 fi
 
 echo "═══════════════════════════════════════════════════════════════"

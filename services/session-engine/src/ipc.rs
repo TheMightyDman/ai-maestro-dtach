@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 use crate::engine::SessionEngine;
 use crate::types::*;
@@ -58,19 +58,17 @@ impl IpcServer {
         // Remove existing socket if it exists
         if self.socket_path.exists() {
             info!("Removing existing socket at {:?}", self.socket_path);
-            std::fs::remove_file(&self.socket_path)
-                .context("Failed to remove existing socket")?;
+            std::fs::remove_file(&self.socket_path).context("Failed to remove existing socket")?;
         }
 
         // Ensure parent directory exists
         if let Some(parent) = self.socket_path.parent() {
-            std::fs::create_dir_all(parent)
-                .context("Failed to create socket directory")?;
+            std::fs::create_dir_all(parent).context("Failed to create socket directory")?;
         }
 
         // Bind to Unix socket
-        let listener = UnixListener::bind(&self.socket_path)
-            .context("Failed to bind to Unix socket")?;
+        let listener =
+            UnixListener::bind(&self.socket_path).context("Failed to bind to Unix socket")?;
 
         info!("IPC server listening on {:?}", self.socket_path);
 
@@ -97,10 +95,7 @@ impl IpcServer {
 }
 
 /// Handle a single client connection
-async fn handle_client(
-    stream: UnixStream,
-    engine: Arc<Mutex<SessionEngine>>,
-) -> Result<()> {
+async fn handle_client(stream: UnixStream, engine: Arc<Mutex<SessionEngine>>) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
@@ -109,7 +104,9 @@ async fn handle_client(
         line.clear();
 
         // Read line from client
-        let bytes_read = reader.read_line(&mut line).await
+        let bytes_read = reader
+            .read_line(&mut line)
+            .await
             .context("Failed to read from client")?;
 
         if bytes_read == 0 {
@@ -233,13 +230,19 @@ fn create_error_response(id: &str, error: &str) -> String {
 }
 
 /// Send response to client
-async fn send_response(writer: &mut tokio::net::unix::OwnedWriteHalf, response: &str) -> Result<()> {
-    writer.write_all(response.as_bytes()).await
+async fn send_response(
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+    response: &str,
+) -> Result<()> {
+    writer
+        .write_all(response.as_bytes())
+        .await
         .context("Failed to write response")?;
-    writer.write_all(b"\n").await
+    writer
+        .write_all(b"\n")
+        .await
         .context("Failed to write newline")?;
-    writer.flush().await
-        .context("Failed to flush response")?;
+    writer.flush().await.context("Failed to flush response")?;
 
     debug!("Sent response: {}", response);
 
@@ -250,7 +253,6 @@ async fn send_response(writer: &mut tokio::net::unix::OwnedWriteHalf, response: 
 mod tests {
     use super::*;
     use crate::engine::EngineConfig;
-    use std::collections::HashMap;
     use tokio::io::AsyncReadExt;
 
     #[tokio::test]

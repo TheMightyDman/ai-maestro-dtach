@@ -32,8 +32,7 @@ impl ScrollbackManager {
     /// * `Ok(ScrollbackManager)` on success
     /// * `Err(anyhow::Error)` on failure
     pub fn new(base_dir: PathBuf, max_lines: Option<usize>) -> Result<Self> {
-        std::fs::create_dir_all(&base_dir)
-            .context("Failed to create scrollback directory")?;
+        std::fs::create_dir_all(&base_dir).context("Failed to create scrollback directory")?;
 
         Ok(Self {
             base_dir,
@@ -98,8 +97,7 @@ impl ScrollbackManager {
             return Ok((String::new(), 0));
         }
 
-        let file = File::open(&file_path)
-            .context("Failed to open scrollback file")?;
+        let file = File::open(&file_path).context("Failed to open scrollback file")?;
 
         let reader = BufReader::new(file);
         let all_lines: Vec<String> = reader
@@ -130,8 +128,7 @@ impl ScrollbackManager {
     fn trim_if_needed(&self, session_id: &SessionId) -> Result<()> {
         let file_path = self.get_file_path(session_id);
 
-        let file = File::open(&file_path)
-            .context("Failed to open scrollback file for trimming")?;
+        let file = File::open(&file_path).context("Failed to open scrollback file for trimming")?;
 
         let reader = BufReader::new(file);
         let lines: Vec<String> = reader
@@ -151,8 +148,7 @@ impl ScrollbackManager {
             let start_index = lines.len() - self.max_lines;
             let trimmed = lines[start_index..].join("\n") + "\n";
 
-            std::fs::write(&file_path, trimmed)
-                .context("Failed to write trimmed scrollback")?;
+            std::fs::write(&file_path, trimmed).context("Failed to write trimmed scrollback")?;
         }
 
         Ok(())
@@ -170,8 +166,7 @@ impl ScrollbackManager {
         let file_path = self.get_file_path(session_id);
 
         if file_path.exists() {
-            std::fs::remove_file(&file_path)
-                .context("Failed to delete scrollback file")?;
+            std::fs::remove_file(&file_path).context("Failed to delete scrollback file")?;
             debug!("Deleted scrollback for session: {}", session_id);
         }
 

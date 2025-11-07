@@ -70,7 +70,7 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
   const [isResetting, setIsResetting] = useState(false)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
   const initializingRef = useRef(false)
-  const [selectionFirst, setSelectionFirst] = useState(true)
+  const [selectionFirst] = useState(true)
 
   // CRITICAL: Initialize notesCollapsed from localStorage SYNCHRONOUSLY during render
   // This ensures the terminal container has the correct height BEFORE xterm.js initializes
@@ -166,10 +166,15 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
   const lastViewportRef = useRef(0)
   const pasteSinkRef = useRef<HTMLDivElement | null>(null)
   const pasteSinkActiveRef = useRef(false)
+  const clipboardStatusTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const [clipboardStatus, setClipboardStatus] = useState<{ type: 'copy' | 'paste'; message: string } | null>(null)
+  const pointerInsideRef = useRef(false)
   const sendScrollRef = useRef<(lines: number, atBottom?: boolean) => boolean>(() => false)
   const remoteScrollOffsetRef = useRef(0)
   const remoteScrollLimitRef = useRef(0)
   const [remoteScrollState, setRemoteScrollState] = useState<{ offset: number; limit: number }>({ offset: 0, limit: 0 })
+  const [scrollMetricsSupported, setScrollMetricsSupported] = useState(false)
+  const scrollMetricsSupportedRef = useRef(false)
   const scrollbarTrackRef = useRef<HTMLDivElement | null>(null)
   const scrollbarPointerActiveRef = useRef(false)
   const scrollbarPointerIdRef = useRef<number | null>(null)
@@ -223,6 +228,9 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
   }, [updateLastViewport])
 
   const applyRemoteScroll = useCallback((lines: number) => {
+    if (!scrollMetricsSupportedRef.current) {
+      return false
+    }
     const handler = sendScrollRef.current
     if (typeof handler !== 'function') {
       return false
@@ -294,64 +302,117 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
   useEffect(() => {
     remoteScrollOffsetRef.current = 0
     remoteScrollLimitRef.current = 0
+    scrollMetricsSupportedRef.current = false
+    setScrollMetricsSupported(false)
     setRemoteScrollState({ offset: 0, limit: 0 })
     setShowScrollToBottom(false)
   }, [session.id])
 
-  // Apply selection-first policy (prevent app mouse-capture) when toggled
+  const fallbackScrollLines = useCallback((lines: number) => {
+    if (!Number.isFinite(lines) || lines === 0) {
+      return false
+    }
+    const term = terminalInstanceRef.current
+    if (!term) {
+      return false
+    }
+    try {
+      term.scrollLines(lines)
+      return true
+    } catch {
+      return false
+    }
+  }, [])
+
+  const fallbackScrollToBottom = useCallback(() => {
+    const term = terminalInstanceRef.current
+    if (!term) {
+      return false
+    }
+    try {
+      term.scrollToBottom()
+      return true
+    } catch {
+      return false
+    }
+  }, [])
+
+  const fallbackScrollToTop = useCallback(() => {
+    const term = terminalInstanceRef.current
+    if (!term) {
+      return false
+    }
+    try {
+      const buffer = term.buffer?.active
+      const viewportY = buffer?.viewportY ?? 0
+      if (viewportY !== 0) {
+        term.scrollLines(-viewportY)
+      }
+      return true
+    } catch {
+      return false
+    }
+  }, [])
+
+  const requestScroll = useCallback(
+    (lines: number, options?: { snapToBottom?: boolean; snapToTop?: boolean }) => {
+      const applied = applyRemoteScroll(lines)
+      if (applied) {
+        return
+      }
+      if (options?.snapToBottom) {
+        if (fallbackScrollToBottom()) {
+          return
+        }
+      }
+      if (options?.snapToTop) {
+        if (fallbackScrollToTop()) {
+          return
+        }
+      }
+      fallbackScrollLines(lines)
+    },
+    [applyRemoteScroll, fallbackScrollLines, fallbackScrollToBottom, fallbackScrollToTop]
+  )
+
+  // Apply selection-first policy (prevent app mouse-capture)
   useEffect(() => {
     if (!terminal) return
     try {
-      setSelectionFirstMode(selectionFirst)
+      setSelectionFirstMode(true)
     } catch (e) {
       console.warn('[TerminalView] setSelectionFirstMode failed:', e)
     }
-  }, [terminal, selectionFirst, setSelectionFirstMode])
+  }, [terminal, setSelectionFirstMode])
 
-  // Handle wheel events for scrolling when selection-first mode is active
+  // Handle wheel events for scrolling; attach directly to terminal element and capture
   useEffect(() => {
-    if (!selectionFirst) {
-      return undefined
-    }
-
-    const container = terminalContainerRef.current
-    if (!container) {
-      return undefined
-    }
+    const el = terminalRef.current
+    if (!el) return
 
     const handleWheel = (event: WheelEvent) => {
-      if (!selectionFirst) {
-        return
-      }
-
       const { deltaY, deltaMode } = event
-      if (deltaY === 0) {
-        return
-      }
+      if (!deltaY) return
 
       event.preventDefault()
       event.stopPropagation()
 
       const divisor = deltaMode === WheelEvent.DOM_DELTA_PIXEL ? 40 : 1
       const floatLines = deltaY / divisor
-      if (!Number.isFinite(floatLines) || floatLines === 0) {
-        return
-      }
+      if (!Number.isFinite(floatLines) || floatLines === 0) return
 
       let lines = Math.round(Math.abs(floatLines))
-      if (lines === 0) {
-        lines = 1
-      }
-
+      if (lines === 0) lines = 1
       const signedLines = deltaY > 0 ? lines : -lines
-      applyRemoteScroll(signedLines)
+
+      requestScroll(signedLines)
     }
 
-    container.addEventListener('wheel', handleWheel, { passive: false })
+    el.addEventListener('wheel', handleWheel, { passive: false, capture: true })
     return () => {
-      container.removeEventListener('wheel', handleWheel)
+      el.removeEventListener('wheel', handleWheel, { capture: true } as any)
     }
-  }, [applyRemoteScroll, selectionFirst])
+  }, [requestScroll])
 
   const runInitialization = useCallback(async () => {
     const initStart = performance.now()
@@ -507,17 +568,17 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
 
   const jumpToBottom = useCallback(() => {
     const term = terminalInstanceRef.current
-    const accepted = applyRemoteScroll(0)
-    if (accepted && term) {
-      preserveViewport(() => {
-        term.scrollToBottom()
-      }, { forceBottom: true })
-      persistScrollState()
-      focusTerminal()
-    } else if (!accepted && term) {
-      focusTerminal()
+    if (!term) {
+      return
     }
-  }, [applyRemoteScroll, focusTerminal, persistScrollState, preserveViewport])
+    requestScroll(0, { snapToBottom: true })
+    preserveViewport(() => {
+      term.scrollToBottom()
+    }, { forceBottom: true })
+    persistScrollState()
+    focusTerminal()
+    setShowScrollToBottom(false)
+  }, [focusTerminal, persistScrollState, preserveViewport, requestScroll])
 
   const flushBuffer = useCallback(() => {
     const term = terminalInstanceRef.current
@@ -651,7 +712,7 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
   }, [fitTerminal, preserveViewport, session.id])
 
   const remoteScrollThumb = useMemo(() => {
-    if (!selectionFirst) {
+    if (!selectionFirst || !scrollMetricsSupported) {
       return { visible: false, topPercent: 100 }
     }
     const { offset, limit } = remoteScrollState
@@ -663,11 +724,15 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
     const topPercent = 100 - ratio * 100
     const bounded = Math.min(98, Math.max(2, topPercent))
     return { visible: true, topPercent: bounded }
-  }, [remoteScrollState, selectionFirst])
+  }, [remoteScrollState, selectionFirst, scrollMetricsSupported])
 
   const handleScrollStatus = useCallback(({ offset, limit }: { offset: number; limit: number }) => {
     const normalizedLimit = Math.max(0, limit)
     const normalizedOffset = Math.max(0, Math.min(normalizedLimit, offset))
+    if (!scrollMetricsSupportedRef.current) {
+      scrollMetricsSupportedRef.current = true
+      setScrollMetricsSupported(true)
+    }
     remoteScrollOffsetRef.current = normalizedOffset
     remoteScrollLimitRef.current = normalizedLimit
     setRemoteScrollState((prev) => {
@@ -686,6 +751,9 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
   }, [])
 
   const scrollToRatio = useCallback((ratio: number) => {
+    if (!scrollMetricsSupportedRef.current) {
+      return
+    }
     const limit = remoteScrollLimitRef.current
     if (limit <= 0) {
       return
@@ -719,6 +787,9 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
 
   const handleScrollbarPointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (!scrollMetricsSupportedRef.current) {
+        return
+      }
       if (!selectionFirst) {
         return
       }
@@ -748,6 +819,10 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
     [handleScrollbarPointerDrag]
   )
 
+  const markPointerInside = useCallback((inside: boolean) => {
+    pointerInsideRef.current = inside
+  }, [])
+
   const handleScrollbarPointerUp = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (!scrollbarPointerActiveRef.current) {
       return
@@ -762,7 +837,7 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
   }, [])
 
   useEffect(() => {
-    if (!selectionFirst && scrollbarPointerActiveRef.current) {
+    if (scrollbarPointerActiveRef.current) {
       const pointerId = scrollbarPointerIdRef.current
       scrollbarPointerActiveRef.current = false
       scrollbarPointerIdRef.current = null
@@ -773,7 +848,27 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
         } catch {}
       }
     }
-  }, [selectionFirst])
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+    const preventOuterScroll = (event: WheelEvent) => {
+      if (!pointerInsideRef.current) {
+        return
+      }
+      if (event.defaultPrevented) {
+        return
+      }
+      event.preventDefault()
+    }
+    window.addEventListener('wheel', preventOuterScroll, { passive: false })
+    return () => {
+      window.removeEventListener('wheel', preventOuterScroll)
+      pointerInsideRef.current = false
+    }
+  }, [])
 
   const handlePolicyUpdate = useCallback((mode: 'normal' | 'replay-only', reason?: string) => {
     setPolicyMode(mode)
@@ -796,7 +891,8 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
     sendResize,
     setLogging: setGatewayLogging,
     claimLeader,
-    acknowledge
+    acknowledge,
+    reconnect: reconnectGateway
   } = useWebSocket({
     sessionId: session.id,
     enabled: active,
@@ -847,6 +943,9 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
         const accepted = sendInput(payload)
         if (accepted) {
           focusTerminal()
+          announceClipboardStatus('paste', `Pasted ${normalizedSink.length} chars`)
+        } else {
+          announceClipboardStatus('paste', 'Paste failed: terminal not ready')
         }
       }, 0)
       return
@@ -867,6 +966,9 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
     const accepted = sendInput(payload)
     if (accepted) {
       focusTerminal()
+      announceClipboardStatus('paste', `Pasted ${normalized.length} chars`)
+    } else {
+      announceClipboardStatus('paste', 'Paste failed: terminal not ready')
     }
   }, [sendInput, focusTerminal])
 
@@ -887,6 +989,7 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
 
     event.clipboardData?.setData('text/plain', selection)
     event.preventDefault()
+    announceClipboardStatus('copy', 'Copied selection')
   }, [terminal])
 
   useEffect(() => {
@@ -901,60 +1004,64 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
 
       const rawKey = event.key
       const key = rawKey.toLowerCase()
-      const isToggleMouse = (event.altKey || event.metaKey) && key === 'm'
-      if (isToggleMouse) {
-        setSelectionFirst((v) => !v)
-        event.preventDefault()
-        return
-      }
+      // Legacy App Mouse toggle removed
 
-      if (selectionFirst && containerFocused && !helperFocused) {
+      if (containerFocused && !helperFocused) {
         const noOtherModifiers = !event.ctrlKey && !event.metaKey && !event.altKey
-        if (noOtherModifiers && event.shiftKey) {
+        if (noOtherModifiers) {
           const term = terminalInstanceRef.current
           const rows = term?.rows ?? 24
+          const pageLines = Math.max(rows - 2, 10)
           let scrollLines = 0
-          let handled = true
+          let handled = false
+          let snapToBottom = false
+          let snapToTop = false
+
           switch (rawKey) {
             case 'PageUp':
-              scrollLines = -Math.max(rows, 10)
+              scrollLines = -pageLines
+              handled = true
               break
             case 'PageDown':
-              scrollLines = Math.max(rows, 10)
+              scrollLines = pageLines
+              handled = true
               break
             case 'ArrowUp':
-              scrollLines = -5
+              if (event.shiftKey) {
+                scrollLines = -5
+                handled = true
+              }
               break
             case 'ArrowDown':
-              scrollLines = 5
+              if (event.shiftKey) {
+                scrollLines = 5
+                handled = true
+              }
               break
             case 'Home':
-              scrollLines = -(remoteScrollLimitRef.current > 0 ? remoteScrollLimitRef.current : rows * 10)
+              scrollLines = -(remoteScrollLimitRef.current > 0 ? remoteScrollLimitRef.current : rows * 25)
+              snapToTop = true
+              handled = true
               break
             case 'End': {
               const offset = remoteScrollOffsetRef.current
               if (offset > 0) {
                 scrollLines = offset
               } else {
-                handled = false
+                scrollLines = rows * 25
               }
+              snapToBottom = true
+              handled = true
               break
             }
             default:
-              handled = false
+              break
           }
 
-          if (handled && scrollLines !== 0) {
+          if (handled) {
             event.preventDefault()
             event.stopPropagation()
-            applyRemoteScroll(scrollLines)
-            return
-          }
-
-          if (handled && rawKey === 'End' && scrollLines === 0) {
-            event.preventDefault()
-            event.stopPropagation()
-            applyRemoteScroll(0)
+            requestScroll(scrollLines, { snapToBottom, snapToTop })
             return
           }
         }
@@ -992,9 +1099,19 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
               try {
                 const sel = terminal.getSelection?.() ?? ''
                 if (sel && navigator.clipboard?.writeText) {
-                  void navigator.clipboard.writeText(sel)
+                  void navigator.clipboard
+                    .writeText(sel)
+                    .then(
+                      () => announceClipboardStatus('copy', 'Copied selection'),
+                      () => announceClipboardStatus('copy', 'Clipboard blocked by browser')
+                    )
                 }
               } catch {}
+            }
+            if (ok) {
+              announceClipboardStatus('copy', 'Copied selection')
+            } else if (!navigator.clipboard?.writeText) {
+              announceClipboardStatus('copy', 'Copied selection')
             }
             return
           }
@@ -1007,7 +1124,7 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
 
     window.addEventListener('keydown', handler, true)
     return () => window.removeEventListener('keydown', handler, true)
-  }, [active, terminal, sendInput, focusTerminal, selectionFirst, applyRemoteScroll, session.id])
+  }, [active, terminal, sendInput, focusTerminal, requestScroll, session.id])
 
   useEffect(() => {
     debugLog(session.id, 'phase', phase)
@@ -1018,6 +1135,10 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
       debugLog(session.id, 'policy', policyMode, policyReason)
     }
   }, [policyMode, policyReason, session.id])
+
+  const handleManualReconnect = useCallback(() => {
+    reconnectGateway()
+  }, [reconnectGateway])
 
   const showConnectionOverlay = useMemo(() => {
     if (!isReady) {
@@ -1063,6 +1184,11 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
       setPolicyReason(null)
       setIsLeader(false)
       setShowScrollToBottom(false)
+      remoteScrollOffsetRef.current = 0
+      remoteScrollLimitRef.current = 0
+      scrollMetricsSupportedRef.current = false
+      setScrollMetricsSupported(false)
+      setRemoteScrollState({ offset: 0, limit: 0 })
     }
   }, [isConnected])
 
@@ -1179,6 +1305,21 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
     return () => {
       autoScrollRef.current = true
       persistScrollState()
+    }
+  }, [persistScrollState])
+
+  useEffect(() => {
+    if (typeof document === 'undefined') {
+      return
+    }
+    const handleVisibility = () => {
+      if (document.visibilityState === 'hidden') {
+        persistScrollState()
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility)
     }
   }, [persistScrollState])
 
@@ -1392,6 +1533,7 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
 
       const rect = terminalElement.getBoundingClientRect()
       const inside = anyTouchInside(touches, rect)
+      markPointerInside(inside)
 
       multiLastDistance = null
       lastTouchY = null
@@ -1507,6 +1649,7 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
       multiLastDistance = null
       lastTouchY = null
       restoreTouchAction()
+      markPointerInside(false)
     }
 
     document.addEventListener('touchstart', handleTouchStart, { passive: true, capture: true })
@@ -1521,7 +1664,7 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
       document.removeEventListener('touchcancel', endGesture, true)
       restoreTouchAction()
     }
-  }, [isMobile, terminal, persistScrollState])
+  }, [isMobile, terminal, persistScrollState, markPointerInside])
 
   // Load notes from localStorage ONCE on mount
   // Tab-based architecture: notes stay in memory, no need to reload on session switch
@@ -1668,17 +1811,7 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
           </div>
           {terminal && (
             <div className="flex items-center gap-2 md:gap-3 text-xs text-gray-400 flex-shrink-0">
-              <button
-                onClick={() => setSelectionFirst((v) => !v)}
-                className={`px-2 py-1 rounded transition-colors text-xs ${
-                  selectionFirst
-                    ? 'bg-gray-700 hover:bg-gray-600 text-gray-200'
-                    : 'bg-blue-700 hover:bg-blue-600 text-white'
-                }`}
-                title={selectionFirst ? 'Selection-first: app mouse suppressed (drag to select without Shift). Click to allow app mouse.' : 'App mouse enabled: programs can capture mouse (use Shift/Option to select). Click to prefer selection.'}
-              >
-                {selectionFirst ? 'Select First' : 'App Mouse'}
-              </button>
+              {/* Legacy App Mouse/Select First control removed */}
               {/* Mobile: Notes toggle button */}
               <button
                 onClick={() => setNotesCollapsed(!notesCollapsed)}
@@ -1773,6 +1906,7 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
 
                     if (navigator.clipboard && navigator.clipboard.writeText) {
                       await navigator.clipboard.writeText(selection)
+                      announceClipboardStatus('copy', 'Copied selection')
                       return
                     }
 
@@ -1784,11 +1918,13 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
                     textarea.select()
                     try {
                       document.execCommand('copy')
+                      announceClipboardStatus('copy', 'Copied selection')
                     } finally {
                       document.body.removeChild(textarea)
                     }
                   } catch (e) {
                     console.warn('Copy failed:', e)
+                    announceClipboardStatus('copy', 'Clipboard blocked by browser')
                   }
                 }}
                 className={`px-2 py-1 rounded transition-colors text-xs ${
@@ -1826,6 +1962,10 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
       <div
         ref={terminalContainerRef}
         className="flex-1 relative min-h-0"
+        onPointerEnter={() => markPointerInside(true)}
+        onPointerLeave={() => markPointerInside(false)}
+        onMouseEnter={() => markPointerInside(true)}
+        onMouseLeave={() => markPointerInside(false)}
         style={{
           overscrollBehavior: 'contain',
           minHeight: 0,
@@ -1890,22 +2030,47 @@ export default function TerminalView({ session, active = true }: TerminalViewPro
             Jump to bottom
           </button>
         )}
+        {clipboardStatus && (
+          <>
+            <div className="sr-only" aria-live="polite">
+              {clipboardStatus.message}
+            </div>
+            <div
+              className="absolute bottom-4 left-4 z-50 rounded-full bg-gray-900/85 text-gray-100 px-3 py-2 text-[11px] shadow-lg border border-gray-700/60"
+            >
+              <span className="mr-2">{clipboardStatus.type === 'copy' ? '📋' : '📥'}</span>
+              <span>{clipboardStatus.message}</span>
+            </div>
+          </>
+        )}
         {showConnectionOverlay && connectionOverlayMessage && (
-          <div className="absolute inset-0 flex items-center justify-center bg-terminal-bg/80 backdrop-blur-sm pointer-events-none">
-            <div className="text-center space-y-3 px-6">
+          <div className="absolute inset-0 flex items-center justify-center bg-terminal-bg/85 backdrop-blur-sm">
+            <div className="text-center space-y-3 px-6 max-w-md pointer-events-auto">
               {overlayIsError ? (
                 <>
                   <p className="text-sm font-medium text-red-300">{connectionOverlayMessage}</p>
-                  {policyStatusMessage && (
-                    <p className="text-xs text-amber-300">{policyStatusMessage}</p>
+                  {errorHint && (
+                    <p className="text-xs text-red-200 leading-relaxed">{errorHint}</p>
                   )}
+                  <div className="flex flex-col gap-2 mt-2 items-center">
+                    <button
+                      type="button"
+                      onClick={handleManualReconnect}
+                      className="px-4 py-2 text-xs font-semibold rounded-full bg-red-500/80 text-white hover:bg-red-400 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-300"
+                    >
+                      Reconnect
+                    </button>
+                    {policyStatusMessage && (
+                      <p className="text-[11px] text-amber-300 leading-snug">{policyStatusMessage}</p>
+                    )}
+                  </div>
                 </>
               ) : (
                 <>
                   <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-300 mx-auto"></div>
                   <p className="text-sm text-gray-300">{connectionOverlayMessage}</p>
                   {policyStatusMessage && (
-                    <p className="text-xs text-gray-400 max-w-sm mx-auto">{policyStatusMessage}</p>
+                    <p className="text-xs text-gray-400 max-w-sm mx-auto leading-relaxed">{policyStatusMessage}</p>
                   )}
                 </>
               )}

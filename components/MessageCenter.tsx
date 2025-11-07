@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { Mail, Send, Inbox, Archive, Trash2, AlertCircle, Clock, CheckCircle, Forward, Copy, ChevronDown } from 'lucide-react'
+import { Mail, Send, Inbox, Archive, Trash2, AlertCircle, Clock, CheckCircle, Forward, Copy, ChevronDown, RefreshCw } from 'lucide-react'
 import type { Message, MessageSummary } from '@/lib/messageQueue'
 
 interface MessageCenterProps {
@@ -29,16 +29,30 @@ export default function MessageCenter({ sessionName, allSessions }: MessageCente
 
   // Copy dropdown state
   const [showCopyDropdown, setShowCopyDropdown] = useState(false)
-  const [copySuccess, setCopySuccess] = useState(false)
+  const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
+  const [isRefreshing, setIsRefreshing] = useState(false)
+  const [lastError, setLastError] = useState<string | null>(null)
+
+  const showToast = useCallback((type: 'success' | 'error', message: string) => {
+    setToast({ type, message })
+    setTimeout(() => setToast(null), 2500)
+  }, [])
 
   // Fetch inbox messages
   const fetchMessages = useCallback(async () => {
     try {
       const response = await fetch(`/api/messages?session=${encodeURIComponent(sessionName)}&box=inbox`)
+      if (!response.ok) {
+        throw new Error('Failed to fetch inbox')
+      }
       const data = await response.json()
       setMessages(data.messages || [])
+      setLastError(null)
+      return true
     } catch (error) {
       console.error('Error fetching messages:', error)
+      setLastError('Unable to load inbox messages')
+      return false
     }
   }, [sessionName])
 
@@ -46,10 +60,16 @@ export default function MessageCenter({ sessionName, allSessions }: MessageCente
   const fetchSentMessages = useCallback(async () => {
     try {
       const response = await fetch(`/api/messages?session=${encodeURIComponent(sessionName)}&box=sent`)
+      if (!response.ok) {
+        throw new Error('Failed to fetch sent messages')
+      }
       const data = await response.json()
       setSentMessages(data.messages || [])
+      return true
     } catch (error) {
       console.error('Error fetching sent messages:', error)
+      setLastError('Unable to load sent messages')
+      return false
     }
   }, [sessionName])
 
@@ -57,10 +77,15 @@ export default function MessageCenter({ sessionName, allSessions }: MessageCente
   const fetchUnreadCount = useCallback(async () => {
     try {
       const response = await fetch(`/api/messages?session=${encodeURIComponent(sessionName)}&action=unread-count`)
+      if (!response.ok) {
+        throw new Error('Failed to fetch unread count')
+      }
       const data = await response.json()
       setUnreadCount(data.count || 0)
+      return true
     } catch (error) {
       console.error('Error fetching unread count:', error)
+      return false
     }
   }, [sessionName])
 
@@ -68,10 +93,15 @@ export default function MessageCenter({ sessionName, allSessions }: MessageCente
   const fetchSentCount = useCallback(async () => {
     try {
       const response = await fetch(`/api/messages?session=${encodeURIComponent(sessionName)}&action=sent-count`)
+      if (!response.ok) {
+        throw new Error('Failed to fetch sent count')
+      }
       const data = await response.json()
       setSentCount(data.count || 0)
+      return true
     } catch (error) {
       console.error('Error fetching sent count:', error)
+      return false
     }
   }, [sessionName])
 
@@ -84,68 +114,57 @@ export default function MessageCenter({ sessionName, allSessions }: MessageCente
 
       // Mark as read if unread (inbox only)
       if (box === 'inbox' && message.status === 'unread') {
-        await fetch(`/api/messages?session=${encodeURIComponent(sessionName)}&id=${messageId}&action=read`, {
+        const patchResponse = await fetch(`/api/messages?session=${encodeURIComponent(sessionName)}&id=${messageId}&action=read`, {
           method: 'PATCH',
         })
-        fetchMessages()
-        fetchUnreadCount()
+        if (patchResponse.ok) {
+          await Promise.all([fetchMessages(), fetchUnreadCount()])
+        }
       }
     } catch (error) {
       console.error('Error loading message:', error)
+      showToast('error', 'Failed to load message')
     }
   }
 
   // Send message
   const sendMessage = async () => {
-    if (!composeTo || !composeSubject || !composeMessage) {
-      alert('Please fill in all fields')
+    if (!composeTo.trim() || !composeSubject.trim() || !composeMessage.trim()) {
+      showToast('error', 'Please fill in all compose fields')
       return
     }
 
     setLoading(true)
     try {
-      // If forwarding, use the forward API
       if (isForwarding && forwardingOriginalMessage) {
-        // Extract the note from the message (everything before "--- Forwarded Message ---")
         const forwardNote = composeMessage.split('--- Forwarded Message ---')[0].trim()
-
         const response = await fetch('/api/messages/forward', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             messageId: forwardingOriginalMessage.id,
             fromSession: sessionName,
-            toSession: composeTo,
+            toSession: composeTo.trim(),
             forwardNote: forwardNote || undefined,
           }),
         })
 
-        if (response.ok) {
-          // Reset form
-          setComposeTo('')
-          setComposeSubject('')
-          setComposeMessage('')
-          setComposePriority('normal')
-          setComposeType('request')
-          setIsForwarding(false)
-          setForwardingOriginalMessage(null)
-          setView('inbox')
-          alert('Message forwarded successfully!')
-          fetchMessages()
-          fetchUnreadCount()
-        } else {
-          const error = await response.json()
-          alert(`Failed to forward message: ${error.error}`)
+        if (!response.ok) {
+          const error = await response.json().catch(() => ({}))
+          showToast('error', error.error || 'Failed to forward message')
+          return
         }
+        showToast('success', 'Message forwarded')
+        setIsForwarding(false)
+        setForwardingOriginalMessage(null)
       } else {
-        // Regular message send
         const response = await fetch('/api/messages', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             from: sessionName,
-            to: composeTo,
-            subject: composeSubject,
+            to: composeTo.trim(),
+            subject: composeSubject.trim(),
             priority: composePriority,
             content: {
               type: composeType,
@@ -154,22 +173,25 @@ export default function MessageCenter({ sessionName, allSessions }: MessageCente
           }),
         })
 
-        if (response.ok) {
-          // Reset form
-          setComposeTo('')
-          setComposeSubject('')
-          setComposeMessage('')
-          setComposePriority('normal')
-          setComposeType('request')
-          setView('inbox')
-          alert('Message sent successfully!')
-        } else {
-          alert('Failed to send message')
+        if (!response.ok) {
+          const error = await response.json().catch(() => ({}))
+          showToast('error', error.error || 'Failed to send message')
+          return
         }
+
+        showToast('success', 'Message sent')
       }
+
+      setComposeTo('')
+      setComposeSubject('')
+      setComposeMessage('')
+      setComposePriority('normal')
+      setComposeType('request')
+      setView('inbox')
+      await refreshAll()
     } catch (error) {
       console.error('Error sending message:', error)
-      alert('Error sending message')
+      showToast('error', 'Error sending message')
     } finally {
       setLoading(false)
     }
@@ -180,28 +202,40 @@ export default function MessageCenter({ sessionName, allSessions }: MessageCente
     if (!confirm('Are you sure you want to delete this message?')) return
 
     try {
-      await fetch(`/api/messages?session=${encodeURIComponent(sessionName)}&id=${messageId}`, {
+      const response = await fetch(`/api/messages?session=${encodeURIComponent(sessionName)}&id=${messageId}`, {
         method: 'DELETE',
       })
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}))
+        showToast('error', error.error || 'Failed to delete message')
+        return
+      }
       setSelectedMessage(null)
-      fetchMessages()
-      fetchUnreadCount()
+      await Promise.all([fetchMessages(), fetchUnreadCount()])
+      showToast('success', 'Message deleted')
     } catch (error) {
       console.error('Error deleting message:', error)
+      showToast('error', 'Error deleting message')
     }
   }
 
   // Archive message
   const archiveMessage = async (messageId: string) => {
     try {
-      await fetch(`/api/messages?session=${encodeURIComponent(sessionName)}&id=${messageId}&action=archive`, {
+      const response = await fetch(`/api/messages?session=${encodeURIComponent(sessionName)}&id=${messageId}&action=archive`, {
         method: 'PATCH',
       })
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}))
+        showToast('error', error.error || 'Failed to archive message')
+        return
+      }
       setSelectedMessage(null)
-      fetchMessages()
-      fetchUnreadCount()
+      await Promise.all([fetchMessages(), fetchUnreadCount()])
+      showToast('success', 'Message archived')
     } catch (error) {
       console.error('Error archiving message:', error)
+      showToast('error', 'Error archiving message')
     }
   }
 
@@ -211,11 +245,11 @@ export default function MessageCenter({ sessionName, allSessions }: MessageCente
 
     try {
       await navigator.clipboard.writeText(selectedMessage.content.message)
-      setCopySuccess(true)
       setShowCopyDropdown(false)
-      setTimeout(() => setCopySuccess(false), 2000)
+      showToast('success', 'Message content copied')
     } catch (error) {
       console.error('Error copying message:', error)
+      showToast('error', 'Copy failed')
     }
   }
 
@@ -263,11 +297,11 @@ export default function MessageCenter({ sessionName, allSessions }: MessageCente
 
     try {
       await navigator.clipboard.writeText(markdown)
-      setCopySuccess(true)
       setShowCopyDropdown(false)
-      setTimeout(() => setCopySuccess(false), 2000)
+      showToast('success', 'LLM-friendly copy complete')
     } catch (error) {
       console.error('Error copying message:', error)
+      showToast('error', 'Copy failed')
     }
   }
 
@@ -293,19 +327,29 @@ export default function MessageCenter({ sessionName, allSessions }: MessageCente
     setView('compose')
   }
 
+  const refreshAll = useCallback(async (showFeedback = false) => {
+    setIsRefreshing(true)
+    const results = await Promise.all([
+      fetchMessages(),
+      fetchSentMessages(),
+      fetchUnreadCount(),
+      fetchSentCount(),
+    ])
+    setIsRefreshing(false)
+    if (showFeedback) {
+      if (results.every(Boolean)) {
+        showToast('success', 'Messages refreshed')
+      } else {
+        showToast('error', 'Some message data failed to refresh')
+      }
+    }
+  }, [fetchMessages, fetchSentMessages, fetchUnreadCount, fetchSentCount, showToast])
+
   useEffect(() => {
-    fetchMessages()
-    fetchSentMessages()
-    fetchUnreadCount()
-    fetchSentCount()
-    const interval = setInterval(() => {
-      fetchMessages()
-      fetchSentMessages()
-      fetchUnreadCount()
-      fetchSentCount()
-    }, 10000) // Refresh every 10 seconds
+    refreshAll()
+    const interval = setInterval(refreshAll, 10000)
     return () => clearInterval(interval)
-  }, [sessionName, fetchMessages, fetchSentMessages, fetchUnreadCount, fetchSentCount])
+  }, [sessionName, refreshAll])
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -341,7 +385,7 @@ export default function MessageCenter({ sessionName, allSessions }: MessageCente
   }
 
   return (
-    <div className="flex flex-col h-full w-full bg-gray-900">
+    <div className="relative flex flex-col h-full w-full bg-gray-900">
       {/* Header */}
       <div className="flex items-center justify-between p-4 bg-gray-800 border-b border-gray-700">
         <div className="flex items-center gap-2">
@@ -354,6 +398,14 @@ export default function MessageCenter({ sessionName, allSessions }: MessageCente
           )}
         </div>
         <div className="flex gap-2">
+          <button
+            onClick={() => refreshAll(true)}
+            disabled={isRefreshing}
+            className="px-3 py-1.5 rounded-md text-sm font-medium bg-gray-700 text-gray-200 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+          >
+            <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+            Refresh
+          </button>
           <button
             onClick={() => setView('inbox')}
             className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
@@ -394,6 +446,12 @@ export default function MessageCenter({ sessionName, allSessions }: MessageCente
           </button>
         </div>
       </div>
+      {lastError && (
+        <div className="px-4 py-2 bg-red-900/30 text-red-200 text-sm flex items-center gap-2 border-b border-red-800/40">
+          <AlertCircle className="w-4 h-4" />
+          <span>{lastError}</span>
+        </div>
+      )}
 
       {/* Inbox View */}
       {view === 'inbox' && (
@@ -846,6 +904,19 @@ export default function MessageCenter({ sessionName, allSessions }: MessageCente
                 Cancel
               </button>
             </div>
+          </div>
+        </div>
+      )}
+      {toast && (
+        <div className="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2">
+          <div
+            className={`px-4 py-2 rounded-full text-sm shadow-lg border ${
+              toast.type === 'success'
+                ? 'bg-green-600/90 border-green-400 text-white'
+                : 'bg-red-700/90 border-red-400 text-white'
+            }`}
+          >
+            {toast.message}
           </div>
         </div>
       )}

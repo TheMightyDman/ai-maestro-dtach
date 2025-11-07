@@ -180,7 +180,7 @@ export default function DashboardPage() {
                   </svg>
                   <p className="text-xl mb-2">No sessions found</p>
                   <p className="text-sm">
-                    Create a tmux session with Claude Code to get started
+                    Create a terminal session to get started
                   </p>
                 </div>
               </div>

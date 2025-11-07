@@ -126,9 +126,8 @@ const mouseSwallowDisposablesRef = useRef<{ h?: { dispose: () => void }, l?: { d
         return params?.some?.((p: number) => swallowed.has(p)) || false
       })
       mouseSwallowDisposablesRef.current = { h, l }
-      const handler = () => false
-      wheelHandlerRef.current = handler
-      term.attachCustomWheelEventHandler?.(handler)
+      // Do not swallow wheel events inside xterm; allow our outer handler to manage scroll
+      // This avoids conflicts during initialization where wheel would be ignored.
       return true
     } catch (e) {
       console.warn('[useTerminal] Failed to register mouse swallow handlers:', e)
@@ -246,6 +245,12 @@ const mouseSwallowDisposablesRef = useRef<{ h?: { dispose: () => void }, l?: { d
       } catch (error) {
         debugLog(sessionId, 'fonts:ready-error', error)
       }
+    }
+
+    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+      await new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => resolve())
+      })
     }
 
     const { cols, rows, cellWidth, cellHeight } = calculateTerminalDimensions(

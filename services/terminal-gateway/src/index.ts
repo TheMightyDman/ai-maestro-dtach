@@ -16,6 +16,7 @@ function parseEnvInt(key: string, fallback: number): number {
 const port = parseEnvInt('TERMINAL_WS_PORT', 23001)
 const host = process.env.TERMINAL_WS_HOST ?? '127.0.0.1'
 const metricsToken = process.env.TERMINAL_METRICS_TOKEN ?? null
+const activityToken = process.env.TERMINAL_ACTIVITY_TOKEN ?? metricsToken
 const maxPayload = parseEnvInt('TERMINAL_MAX_PAYLOAD', 1 * 1024 * 1024)
 
 const manager = new SessionManager()
@@ -28,10 +29,21 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.url.startsWith('/activity')) {
+    if (activityToken) {
+      const headerToken = req.headers['authorization']
+      const token = headerToken?.startsWith('Bearer ')
+        ? headerToken.slice('Bearer '.length)
+        : null
+      if (token !== activityToken) {
+        res.writeHead(401)
+        res.end('Unauthorized')
+        return
+      }
+    }
     const snapshot = manager.activitySnapshot()
     res.setHeader('Content-Type', 'application/json')
     res.writeHead(200)
-    res.end(JSON.stringify({ sessions: snapshot }))
+    res.end(JSON.stringify({ generatedAt: new Date().toISOString(), sessions: snapshot }))
     return
   }
 

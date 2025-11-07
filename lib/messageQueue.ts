@@ -1,6 +1,7 @@
 import { promises as fs } from 'fs'
 import path from 'path'
 import os from 'os'
+import crypto from 'node:crypto'
 
 export interface Message {
   id: string
@@ -44,7 +45,63 @@ export interface MessageSummary {
   preview: string
 }
 
-const MESSAGE_DIR = path.join(os.homedir(), '.aimaestro', 'messages')
+const SESSION_NAME_REGEX = /^[A-Za-z0-9_-]+$/
+const SUBJECT_MAX_LENGTH = 240
+const MESSAGE_PREVIEW_LENGTH = 160
+const MESSAGE_BODY_MAX_LENGTH = Number(process.env.AIMAESTRO_MESSAGE_MAX_CHARS ?? 20000)
+
+const MESSAGE_DIR = (() => {
+  const customDir = process.env.AIMAESTRO_MESSAGE_DIR
+  if (customDir) {
+    return path.resolve(customDir)
+  }
+  return path.join(os.homedir(), '.aimaestro', 'messages')
+})()
+
+function assertSessionName(value: string, field: 'from' | 'to' | 'session'): void {
+  if (!value || !SESSION_NAME_REGEX.test(value)) {
+    throw new Error(`Invalid ${field} session name: "${value}". Use letters, numbers, _, or -.`)
+  }
+}
+
+function sanitizeSubject(subject: string): string {
+  const trimmed = subject?.trim?.() ?? ''
+  if (!trimmed) {
+    throw new Error('Subject cannot be empty')
+  }
+  if (trimmed.length > SUBJECT_MAX_LENGTH) {
+    throw new Error(`Subject is too long (max ${SUBJECT_MAX_LENGTH} characters)`)
+  }
+  return trimmed
+}
+
+function sanitizeContent(content: Message['content']): Message['content'] {
+  if (!content || typeof content.message !== 'string' || !content.type) {
+    throw new Error('Content must include type and message')
+  }
+  const trimmedMessage = content.message.trim()
+  if (!trimmedMessage) {
+    throw new Error('Content message cannot be empty')
+  }
+  if (trimmedMessage.length > MESSAGE_BODY_MAX_LENGTH) {
+    throw new Error(`Content message exceeds ${MESSAGE_BODY_MAX_LENGTH} characters`)
+  }
+  return {
+    ...content,
+    message: trimmedMessage
+  }
+}
+
+function buildPreview(message: string): string {
+  if (!message) {
+    return ''
+  }
+  const normalized = message.replace(/\s+/g, ' ').trim()
+  if (normalized.length <= MESSAGE_PREVIEW_LENGTH) {
+    return normalized
+  }
+  return `${normalized.slice(0, MESSAGE_PREVIEW_LENGTH - 1)}…`
+}
 
 /**
  * Ensures the message directory structure exists
@@ -66,8 +123,11 @@ export async function ensureMessageDirectories(): Promise<void> {
  * Generate a unique message ID
  */
 function generateMessageId(): string {
-  const timestamp = Date.now()
-  const random = Math.random().toString(36).substring(2, 9)
+  if (typeof crypto.randomUUID === 'function') {
+    return `msg-${crypto.randomUUID()}`
+  }
+  const timestamp = Date.now().toString(36)
+  const random = Math.random().toString(36).substring(2, 10)
   return `msg-${timestamp}-${random}`
 }
 
@@ -101,6 +161,22 @@ async function ensureSessionDirectories(sessionName: string): Promise<void> {
   await fs.mkdir(getArchivedDir(sessionName), { recursive: true })
 }
 
+async function writeMessageFile(filePath: string, message: Message): Promise<void> {
+  await fs.writeFile(filePath, JSON.stringify(message, null, 2))
+}
+
+async function readMessageIfExists(filePath: string): Promise<Message | null> {
+  try {
+    const content = await fs.readFile(filePath, 'utf-8')
+    return JSON.parse(content)
+  } catch (error: any) {
+    if (error?.code === 'ENOENT') {
+      return null
+    }
+    throw error
+  }
+}
+
 /**
  * Send a message from one session to another
  */
@@ -114,6 +190,11 @@ export async function sendMessage(
     inReplyTo?: string
   }
 ): Promise<Message> {
+  assertSessionName(from, 'from')
+  assertSessionName(to, 'to')
+  const safeSubject = sanitizeSubject(subject)
+  const safeContent = sanitizeContent(content)
+
   await ensureMessageDirectories()
   await ensureSessionDirectories(from)
   await ensureSessionDirectories(to)
@@ -123,20 +204,20 @@ export async function sendMessage(
     from,
     to,
     timestamp: new Date().toISOString(),
-    subject,
+    subject: safeSubject,
     priority: options?.priority || 'normal',
     status: 'unread',
-    content,
+    content: safeContent,
     inReplyTo: options?.inReplyTo,
   }
 
   // Write to recipient's inbox
   const inboxPath = path.join(getInboxDir(to), `${message.id}.json`)
-  await fs.writeFile(inboxPath, JSON.stringify(message, null, 2))
+  await writeMessageFile(inboxPath, message)
 
   // Write to sender's sent folder
   const sentPath = path.join(getSentDir(from), `${message.id}.json`)
-  await fs.writeFile(sentPath, JSON.stringify(message, null, 2))
+  await writeMessageFile(sentPath, message)
 
   return message
 }
@@ -150,6 +231,12 @@ export async function forwardMessage(
   toSession: string,
   forwardNote?: string
 ): Promise<Message> {
+  assertSessionName(fromSession, 'from')
+  assertSessionName(toSession, 'to')
+  if (fromSession === toSession) {
+    throw new Error('Cannot forward to the same session')
+  }
+
   // Get the original message
   const originalMessage = await getMessage(fromSession, originalMessageId)
   if (!originalMessage) {
@@ -162,8 +249,9 @@ export async function forwardMessage(
 
   // Build forwarded content
   let forwardedContent = ''
-  if (forwardNote) {
-    forwardedContent += `${forwardNote}\n\n`
+  const trimmedNote = forwardNote?.trim()
+  if (trimmedNote) {
+    forwardedContent += `${trimmedNote}\n\n`
   }
   forwardedContent += `--- Forwarded Message ---\n`
   forwardedContent += `From: ${originalMessage.from}\n`
@@ -179,7 +267,7 @@ export async function forwardMessage(
     from: fromSession,
     to: toSession,
     timestamp: new Date().toISOString(),
-    subject: `Fwd: ${originalMessage.subject}`,
+    subject: sanitizeSubject(`Fwd: ${originalMessage.subject}`),
     priority: originalMessage.priority,
     status: 'unread',
     content: {
@@ -193,17 +281,17 @@ export async function forwardMessage(
       originalTimestamp: originalMessage.timestamp,
       forwardedBy: fromSession,
       forwardedAt: new Date().toISOString(),
-      forwardNote,
+      forwardNote: trimmedNote,
     },
   }
 
   // Write to recipient's inbox
   const inboxPath = path.join(getInboxDir(toSession), `${forwardedMessage.id}.json`)
-  await fs.writeFile(inboxPath, JSON.stringify(forwardedMessage, null, 2))
+  await writeMessageFile(inboxPath, forwardedMessage)
 
   // Write to sender's sent folder (mark as forwarded)
   const sentPath = path.join(getSentDir(fromSession), `fwd_${forwardedMessage.id}.json`)
-  await fs.writeFile(sentPath, JSON.stringify(forwardedMessage, null, 2))
+  await writeMessageFile(sentPath, forwardedMessage)
 
   return forwardedMessage
 }
@@ -253,7 +341,7 @@ export async function listInboxMessages(
         priority: message.priority,
         status: message.status,
         type: message.content.type,
-        preview: message.content.message.substring(0, 100),
+        preview: buildPreview(message.content.message),
       })
     } catch (error) {
       console.error(`Error reading message file ${file}:`, error)
@@ -309,7 +397,7 @@ export async function listSentMessages(
         priority: message.priority,
         status: message.status,
         type: message.content.type,
-        preview: message.content.message.substring(0, 100),
+        preview: buildPreview(message.content.message),
       })
     } catch (error) {
       console.error(`Error reading sent message file ${file}:`, error)
@@ -338,38 +426,35 @@ export async function getMessage(
   messageId: string,
   box: 'inbox' | 'sent' = 'inbox'
 ): Promise<Message | null> {
-  const dir = box === 'sent' ? getSentDir(sessionName) : getInboxDir(sessionName)
-  const messagePath = path.join(dir, `${messageId}.json`)
+  await ensureSessionDirectories(sessionName)
+  const primaryDir = box === 'sent' ? getSentDir(sessionName) : getInboxDir(sessionName)
+  const fallbackDir = box === 'sent' ? getInboxDir(sessionName) : getSentDir(sessionName)
+  const archivedDir = getArchivedDir(sessionName)
 
-  try {
-    const content = await fs.readFile(messagePath, 'utf-8')
-    return JSON.parse(content)
-  } catch (error) {
-    // If not found in specified box, try the other box as fallback
-    const fallbackDir = box === 'sent' ? getInboxDir(sessionName) : getSentDir(sessionName)
-    const fallbackPath = path.join(fallbackDir, `${messageId}.json`)
+  const primary = await readMessageIfExists(path.join(primaryDir, `${messageId}.json`))
+  if (primary) return primary
 
-    try {
-      const content = await fs.readFile(fallbackPath, 'utf-8')
-      return JSON.parse(content)
-    } catch (fallbackError) {
-      return null
-    }
-  }
+  const secondary = await readMessageIfExists(path.join(fallbackDir, `${messageId}.json`))
+  if (secondary) return secondary
+
+  return readMessageIfExists(path.join(archivedDir, `${messageId}.json`))
 }
 
 /**
  * Mark a message as read
  */
 export async function markMessageAsRead(sessionName: string, messageId: string): Promise<boolean> {
-  const message = await getMessage(sessionName, messageId)
-  if (!message) return false
-
-  message.status = 'read'
-
+  await ensureSessionDirectories(sessionName)
   const inboxPath = path.join(getInboxDir(sessionName), `${messageId}.json`)
-  await fs.writeFile(inboxPath, JSON.stringify(message, null, 2))
-
+  const message = await readMessageIfExists(inboxPath)
+  if (!message) {
+    return false
+  }
+  if (message.status === 'read') {
+    return true
+  }
+  message.status = 'read'
+  await writeMessageFile(inboxPath, message)
   return true
 }
 
@@ -377,15 +462,17 @@ export async function markMessageAsRead(sessionName: string, messageId: string):
  * Archive a message (move from inbox to archived)
  */
 export async function archiveMessage(sessionName: string, messageId: string): Promise<boolean> {
-  const message = await getMessage(sessionName, messageId)
-  if (!message) return false
-
-  message.status = 'archived'
-
+  await ensureSessionDirectories(sessionName)
   const inboxPath = path.join(getInboxDir(sessionName), `${messageId}.json`)
   const archivedPath = path.join(getArchivedDir(sessionName), `${messageId}.json`)
 
-  await fs.writeFile(archivedPath, JSON.stringify(message, null, 2))
+  const message = await readMessageIfExists(inboxPath)
+  if (!message) {
+    return false
+  }
+
+  message.status = 'archived'
+  await writeMessageFile(archivedPath, message)
   await fs.unlink(inboxPath)
 
   return true
@@ -395,14 +482,26 @@ export async function archiveMessage(sessionName: string, messageId: string): Pr
  * Delete a message permanently
  */
 export async function deleteMessage(sessionName: string, messageId: string): Promise<boolean> {
-  const inboxPath = path.join(getInboxDir(sessionName), `${messageId}.json`)
+  await ensureSessionDirectories(sessionName)
+  const targets = [
+    path.join(getInboxDir(sessionName), `${messageId}.json`),
+    path.join(getArchivedDir(sessionName), `${messageId}.json`),
+    path.join(getSentDir(sessionName), `${messageId}.json`)
+  ]
 
-  try {
-    await fs.unlink(inboxPath)
-    return true
-  } catch (error) {
-    return false
+  let deleted = false
+  for (const filePath of targets) {
+    try {
+      await fs.unlink(filePath)
+      deleted = true
+    } catch (error: any) {
+      if (error?.code === 'ENOENT') {
+        continue
+      }
+      throw error
+    }
   }
+  return deleted
 }
 
 /**
@@ -454,4 +553,10 @@ export async function getMessageStats(sessionName: string): Promise<{
   })
 
   return stats
+}
+
+export async function resetMessageStoreForTests(): Promise<void> {
+  if (!process.env.NODE_ENV || process.env.NODE_ENV === 'test') {
+    await fs.rm(MESSAGE_DIR, { recursive: true, force: true })
+  }
 }

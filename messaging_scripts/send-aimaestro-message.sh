@@ -1,10 +1,16 @@
 #!/bin/bash
 # AI Maestro - Send a message to another session
 
-# Usage: send-aimaestro-message.sh <to_session> <subject> <message> [priority] [type]
+# Usage: send-aimaestro-message.sh [--session name] [--api-url url] <to_session> <subject> <message> [priority] [type]
 
-if [ $# -lt 3 ]; then
-  echo "Usage: send-aimaestro-message.sh <to_session> <subject> <message> [priority] [type]"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/_common.sh"
+
+SESSION_OVERRIDE=""
+API_OVERRIDE=""
+
+print_usage() {
+  echo "Usage: send-aimaestro-message.sh [--session name] [--api-url url] <to_session> <subject> <message> [priority] [type]"
   echo ""
   echo "Arguments:"
   echo "  to_session  - Target session name (e.g., backend-architect)"
@@ -13,8 +19,46 @@ if [ $# -lt 3 ]; then
   echo "  priority    - Optional: low|normal|high|urgent (default: normal)"
   echo "  type        - Optional: request|response|notification|update (default: request)"
   echo ""
+  echo "Options:"
+  echo "  --session <name>   Override session (defaults to \$AIMAESTRO_SESSION)"
+  echo "  --api-url <url>    Override API base URL (defaults to env/host config)"
+  echo "  --help, -h         Show this help message"
+  echo ""
   echo "Example:"
   echo "  send-aimaestro-message.sh backend-architect \"Need API\" \"Please implement POST /api/users\" high request"
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --session)
+      SESSION_OVERRIDE="$2"
+      shift 2
+      ;;
+    --api-url)
+      API_OVERRIDE="$2"
+      shift 2
+      ;;
+    --help|-h)
+      print_usage
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "Unknown option: $1"
+      print_usage
+      exit 1
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+if [ $# -lt 3 ]; then
+  print_usage
   exit 1
 fi
 
@@ -24,12 +68,7 @@ MESSAGE="$3"
 PRIORITY="${4:-normal}"
 TYPE="${5:-request}"
 
-# Get current session from environment variable set by session engine
-FROM_SESSION="${AIMAESTRO_SESSION}"
-if [ -z "$FROM_SESSION" ]; then
-  echo "Error: Not in an AI Maestro session (AIMAESTRO_SESSION not set)"
-  exit 1
-fi
+FROM_SESSION="$(ai_msg_resolve_session "$SESSION_OVERRIDE")"
 
 # Validate priority
 if [[ ! "$PRIORITY" =~ ^(low|normal|high|urgent)$ ]]; then
@@ -63,9 +102,7 @@ JSON_PAYLOAD=$(jq -n \
   }')
 
 # Send via API and capture response with HTTP status code
-API_HOST=${AIMAESTRO_API_HOST:-127.0.0.1}
-API_PORT=${AIMAESTRO_API_PORT:-23000}
-API_BASE_URL=${AIMAESTRO_API_URL:-http://$API_HOST:$API_PORT}
+API_BASE_URL="$(ai_msg_resolve_api_base "$API_OVERRIDE")"
 
 RESPONSE=$(curl -s -S -w "\n%{http_code}" -X POST "${API_BASE_URL}/api/messages" \
   -H 'Content-Type: application/json' \

@@ -14,6 +14,7 @@ const handle = app.getRequestHandler()
 
 const gatewayHost = process.env.TERMINAL_WS_HOST || '127.0.0.1'
 const gatewayPort = parseInt(process.env.TERMINAL_WS_PORT || '23001', 10)
+const embedGateway = process.env.AIMAESTRO_EMBED_GATEWAY !== '0'
 const proxy = httpProxy.createProxyServer({
   target: `http://${gatewayHost}:${gatewayPort}`,
   ws: true,
@@ -34,30 +35,40 @@ proxy.on('proxyReqWs', (_proxyReq, req) => {
 })
 
 app.prepare().then(() => {
-  const gatewayEnv = {
-    ...process.env,
-    TERMINAL_WS_HOST: gatewayHost,
-    TERMINAL_WS_PORT: String(gatewayPort)
+  let gatewayProcess = null
+
+  if (embedGateway) {
+    const gatewayEnv = {
+      ...process.env,
+      TERMINAL_WS_HOST: gatewayHost,
+      TERMINAL_WS_PORT: String(gatewayPort)
+    }
+
+    const gatewayEntry = new URL('./services/terminal-gateway/dist/index.js', import.meta.url).pathname
+    if (!existsSync(gatewayEntry)) {
+      console.warn(
+        '[gateway] Build output not found at services/terminal-gateway/dist/index.js. Run "npm run gateway:build" to compile the gateway service.'
+      )
+    }
+
+    gatewayProcess = spawn(process.execPath, [gatewayEntry], {
+      env: gatewayEnv,
+      stdio: 'inherit'
+    })
+
+    gatewayProcess.on('error', (error) => {
+      console.error('[gateway] failed to start:', error)
+    })
+
+    gatewayProcess.on('exit', (code, signal) => {
+      const reason = typeof code === 'number' ? `code ${code}` : signal ? `signal ${signal}` : 'unknown reason'
+      console.log(`[gateway] process exited (${reason})`)
+    })
+  } else {
+    console.log(
+      `[gateway] External mode enabled. Expecting gateway on ws://${gatewayHost}:${gatewayPort}/term (set AIMAESTRO_EMBED_GATEWAY=1 to auto-launch).`
+    )
   }
-
-  const gatewayEntry = new URL('./services/terminal-gateway/dist/index.js', import.meta.url).pathname
-  if (!existsSync(gatewayEntry)) {
-    console.warn('[gateway] Build output not found at services/terminal-gateway/dist/index.js. Run "npm run gateway:build" to compile the gateway service.')
-  }
-
-  const gatewayProcess = spawn(process.execPath, [gatewayEntry], {
-    env: gatewayEnv,
-    stdio: 'inherit'
-  })
-
-  gatewayProcess.on('error', (error) => {
-    console.error('[gateway] failed to start:', error)
-  })
-
-  gatewayProcess.on('exit', (code, signal) => {
-    const reason = typeof code === 'number' ? `code ${code}` : signal ? `signal ${signal}` : 'unknown reason'
-    console.log(`[gateway] process exited (${reason})`)
-  })
 
   const server = createServer(async (req, res) => {
     try {
@@ -93,7 +104,7 @@ app.prepare().then(() => {
     server.close(() => {
       process.exit(0)
     })
-    if (!gatewayProcess.killed) {
+    if (gatewayProcess && !gatewayProcess.killed) {
       gatewayProcess.kill()
     }
   }

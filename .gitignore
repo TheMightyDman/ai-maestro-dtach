@@ -90,6 +90,9 @@ Desktop.ini
 tmp
 temp
 *.tmp
+.tmp-tests
+services/session-engine/target/
+services/session-engine/data/
 
 # Session logs
 logs/

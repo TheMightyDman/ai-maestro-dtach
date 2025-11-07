@@ -1,26 +1,32 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { z } from 'zod'
 import { forwardMessage } from '@/lib/messageQueue'
+
+const sessionNameSchema = z
+  .string()
+  .min(1, 'Session name is required')
+  .regex(/^[A-Za-z0-9_-]+$/, 'Session name can only include letters, numbers, underscores, or hyphens')
+
+const forwardSchema = z.object({
+  messageId: z.string().min(1, 'messageId is required'),
+  fromSession: sessionNameSchema,
+  toSession: sessionNameSchema,
+  forwardNote: z.string().optional(),
+})
+
+function validationError(error: z.ZodError) {
+  const issues = error.issues.map((issue) => issue.message).join('; ')
+  return NextResponse.json({ error: issues }, { status: 422 })
+}
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json()
-    const { messageId, fromSession, toSession, forwardNote } = body
-
-    // Validate required fields
-    if (!messageId || !fromSession || !toSession) {
-      return NextResponse.json(
-        { error: 'messageId, fromSession, and toSession are required' },
-        { status: 400 }
-      )
+    const json = await request.json()
+    const parsed = forwardSchema.safeParse(json)
+    if (!parsed.success) {
+      return validationError(parsed.error)
     }
-
-    // Validate that from and to sessions are different
-    if (fromSession === toSession) {
-      return NextResponse.json(
-        { error: 'Cannot forward message to the same session' },
-        { status: 400 }
-      )
-    }
+    const { messageId, fromSession, toSession, forwardNote } = parsed.data
 
     // Forward the message
     const forwardedMessage = await forwardMessage(

@@ -1,6 +1,8 @@
-import * as pty from 'node-pty'
 import type { IPty } from 'node-pty'
-import { getSessionEngineClient } from '../../../lib/session-engine-client'
+import * as pty from 'node-pty'
+import { existsSync } from 'node:fs'
+
+import { getSessionEngineClient } from '../lib/session-engine-client'
 
 export interface PtySessionOptions {
   readonly sessionName: string
@@ -55,8 +57,12 @@ export class PtySession {
       socketPath = response.socket_path
     }
 
+    if (!socketPath) {
+      throw new Error(`Session engine did not provide a socket path for session "${sessionName}".`)
+    }
+
     // Get dtach binary path
-    const dtachPath = process.env.AIMAESTRO_DTACH_PATH || '/usr/local/bin/dtach'
+    const dtachPath = resolveDtachPath()
 
     // Spawn dtach attach
     const ptyProcess = pty.spawn(dtachPath, ['-a', socketPath], {
@@ -102,4 +108,20 @@ export class PtySession {
       // ignore
     }
   }
+}
+
+function resolveDtachPath(): string {
+  const override = process.env.AIMAESTRO_DTACH_PATH?.trim()
+  if (override) {
+    return override
+  }
+
+  for (const candidate of ['/usr/local/bin/dtach', '/usr/bin/dtach']) {
+    if (existsSync(candidate)) {
+      return candidate
+    }
+  }
+
+  // Fallback to relying on PATH
+  return 'dtach'
 }

@@ -1,68 +1,100 @@
 #!/bin/bash
-# AI Maestro - Check and display UNREAD messages at session start
-# This is the auto-run version that shows on session attach
+# AI Maestro - Display detailed inbox messages
 
-SESSION="${AIMAESTRO_SESSION}"
-if [ -z "$SESSION" ]; then
-  exit 0
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/_common.sh"
+
+SESSION_OVERRIDE=""
+API_OVERRIDE=""
+
+print_usage() {
+  cat <<'EOF'
+Usage: check-and-show-messages.sh [options]
+
+Options:
+  --session <name>   Override session (defaults to $AIMAESTRO_SESSION)
+  --api-url <url>    Override API base URL
+  --help, -h         Show this help message
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --session)
+      SESSION_OVERRIDE="$2"
+      shift 2
+      ;;
+    --api-url)
+      API_OVERRIDE="$2"
+      shift 2
+      ;;
+    --help|-h)
+      print_usage
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      print_usage
+      exit 1
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+if ! ai_msg_have_jq; then
+  echo "Error: jq is required for check-and-show-messages.sh. Install with: brew install jq" >&2
+  exit 1
 fi
 
-API_HOST=${AIMAESTRO_API_HOST:-127.0.0.1}
-API_PORT=${AIMAESTRO_API_PORT:-23000}
-API_BASE_URL=${AIMAESTRO_API_URL:-http://$API_HOST:$API_PORT}
+SESSION="$(ai_msg_resolve_session "$SESSION_OVERRIDE")"
+API_BASE_URL="$(ai_msg_resolve_api_base "$API_OVERRIDE")"
 
-# Fetch unread messages via API
-RESPONSE=$(curl --silent --fail --get "${API_BASE_URL}/api/messages" \
+RESPONSE=$(curl --silent --show-error --fail --get "${API_BASE_URL}/api/messages" \
   --data-urlencode "session=${SESSION}" \
-  --data-urlencode "status=unread" \
-  --data-urlencode "box=inbox" 2>/dev/null)
+  --data-urlencode "box=inbox" 2>&1)
 
-# Check if API call was successful
 if [ $? -ne 0 ]; then
-  # Silently fail if API is not available
+  echo "❌ Error: Failed to connect to ${API_BASE_URL}" >&2
+  exit 1
+fi
+
+if ! echo "$RESPONSE" | jq empty >/dev/null 2>&1; then
+  echo "❌ Error: Invalid response from API" >&2
+  echo "   Response: $RESPONSE" >&2
+  exit 1
+fi
+
+API_ERROR=$(echo "$RESPONSE" | jq -r '.error // empty')
+if [ -n "$API_ERROR" ]; then
+  echo "❌ API Error: $API_ERROR" >&2
+  exit 1
+fi
+
+COUNT=$(echo "$RESPONSE" | jq -r '.messages | length')
+if [ "$COUNT" -eq 0 ]; then
+  echo "📭 Inbox is empty"
   exit 0
 fi
 
-# Parse message count
-COUNT=$(echo "$RESPONSE" | jq -r '.messages | length' 2>/dev/null)
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "📬 Inbox for ${SESSION} — $COUNT message(s)"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-if [ -z "$COUNT" ] || [ "$COUNT" = "null" ] || [ "$COUNT" = "0" ]; then
-  # No unread messages, exit silently
-  exit 0
-fi
-
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
-echo "📬 AI MAESTRO INBOX: $COUNT unread message(s)" >&2
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
-echo "" >&2
-
-# Count priorities
-URGENT=$(echo "$RESPONSE" | jq -r '[.messages[] | select(.priority == "urgent")] | length' 2>/dev/null)
-HIGH=$(echo "$RESPONSE" | jq -r '[.messages[] | select(.priority == "high")] | length' 2>/dev/null)
-
-if [ "$URGENT" != "0" ] && [ "$URGENT" != "null" ]; then
-  echo "🚨 $URGENT URGENT message(s)" >&2
-fi
-if [ "$HIGH" != "0" ] && [ "$HIGH" != "null" ]; then
-  echo "⚠️  $HIGH HIGH priority message(s)" >&2
-fi
-
-if [ "$URGENT" != "0" ] || [ "$HIGH" != "0" ]; then
-  echo "" >&2
-fi
-
-# Show all messages
 echo "$RESPONSE" | jq -r '.messages[] |
-  "───────────────────────────────────────\n" +
-  "📧 From: \(.from)\n" +
-  "📌 Subject: \(.subject)\n" +
-  "⏰ Time: \(.timestamp | split("T")[0] + " " + (.timestamp | split("T")[1] | split(".")[0]))\n" +
-  "🎯 Priority: \(.priority | ascii_upcase)\n" +
-  "📝 Type: \(.content.type)\n" +
-  "\nMessage:\n\(.content.message)\n" +
-  (if .content.context then "\n📎 Context:\n" + (.content.context | tostring) + "\n" else "" end)' >&2
+  "ID: \(.id)\n" +
+  "From: \(.from)\n" +
+  "Subject: \(.subject)\n" +
+  "Priority: \(.priority | ascii_upcase)\n" +
+  "Status: \(.status)\n" +
+  "Type: \(.content.type)\n" +
+  "Timestamp: \(.timestamp | split("T")[0] + " " + (.timestamp | split("T")[1] | split(".")[0]))\n" +
+  "Preview: \(.preview)\n" +
+  "────────────────────────────────────────\n"'
 
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
-echo "💡 To manage messages: Use check-aimaestro-messages.sh or AI Maestro dashboard" >&2
-echo "💡 To read and mark as read: read-aimaestro-message.sh <message-id>" >&2
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
+echo "💡 Use read-aimaestro-message.sh <id> to view full content."
